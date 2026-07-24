@@ -1,0 +1,40 @@
+# ---- IDE ----
+.idea/
+
+# ---- Android / Gradle (aaos-cockpit-app) ----
+*.iml
+.gradle/
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# ---- Python (dms-ai-engine) ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.log
+
+# ---- Docker ----
+*.tar
+
+# ---- Secrets ----
+.env
+**/secrets.properties
+
+# ---- Internal-only planning doc, not for the shared repo ----
+/VITAL_GUARD_AI_E2E_GUIDE.md
