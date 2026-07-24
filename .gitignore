@@ -36,5 +36,8 @@ venv/
 .env
 **/secrets.properties
 
-# ---- Internal-only planning doc, not for the shared repo ----
+# ---- Internal-only planning/notes docs, not for the shared repo ----
 /VITAL_GUARD_AI_E2E_GUIDE.md
+/CLAUDE.md
+/MEMORY.md
+.claude/
