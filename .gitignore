@@ -4,7 +4,7 @@
 # ---- Android / Gradle (aaos-cockpit-app) ----
 *.iml
 .gradle/
-/local.properties
+local.properties
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
@@ -12,8 +12,8 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
-/build/
-/captures/
+build/
+captures/
 .externalNativeBuild/
 .cxx/
 *.apk
@@ -42,3 +42,4 @@ venv/
 CLAUDE.md
 MEMORY.md
 .claude/
+.serena/

@@ -3,6 +3,11 @@
 
     <uses-feature android:name="android.hardware.type.automotive" android:required="true" />
 
+    <uses-permission android:name="android.car.permission.CONTROL_CAR_CLIMATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/sym_def_app_icon"
@@ -18,11 +23,24 @@
             </intent-filter>
         </activity>
 
+        <!-- Owns the live TRIGGER_ALERT receiver (see VitalGuardMonitorService); a
+             manifest-declared receiver for this implicit action never fires on API 26+
+             (confirmed on-device: "Background execution not allowed"), so it isn't declared
+             here — the dynamic registration inside the service is the only real path. -->
+        <service
+            android:name=".VitalGuardMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Driver drowsiness monitoring and multi-sensory alert intervention" />
+        </service>
+
         <receiver
-            android:name=".ClimateOverrideReceiver"
+            android:name=".BootCompletedReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.vitalguard.ai.TRIGGER_ALERT" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 
