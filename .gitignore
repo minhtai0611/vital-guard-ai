@@ -37,7 +37,8 @@ venv/
 **/secrets.properties
 
 # ---- Internal-only planning/notes docs, not for the shared repo ----
+# (root AND per-directory, e.g. aaos-cockpit-app/CLAUDE.md)
 /VITAL_GUARD_AI_E2E_GUIDE.md
-/CLAUDE.md
-/MEMORY.md
+CLAUDE.md
+MEMORY.md
 .claude/
