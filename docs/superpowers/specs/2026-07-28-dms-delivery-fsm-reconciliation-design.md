@@ -25,6 +25,10 @@ largely **aspirational**. Deep-research into the actual repo state (2026-07-28) 
     works), and it POSTs a custom JSON payload to a `--trigger-url` that matches
     neither Track A's broadcast extra nor CLAUDE.md's documented
     `contracts/trigger.schema.json` (which does not exist anywhere in the repo).
+  - Critically, `TriggerEmitter.update()` only ever returns `True` **once**, on the
+    rising edge into CRITICAL (verified by reading `trigger_emitter.py` and
+    `main.py` directly) — there is no periodic "still CRITICAL" signal and no
+    recovery signal at all today, on either track.
 - No `contracts/trigger.schema.json`, no `script-node/` Luau files, no `docs/`
   directory, and **none** of the Kotlin files CLAUDE.md's "Implementation Status"
   claims exist (`DrowsinessController.kt`, `ClimateActuatorGateway.kt`,
@@ -42,23 +46,35 @@ mechanism and payload schema, and scopes a minimal but real Kotlin FSM + gateway
 layer — all sized to what's achievable in the 13 days remaining, per CLAUDE.md's own
 principle: *working code with evidence over polishing unvalidated theory.*
 
+**Revision note:** an earlier draft of this design proposed reusing Track A's
+CarSky-control-plane HTTP delivery mechanism (relabeled "CarSky Shell-Exec API
+delivery") as the default trigger path. Review caught that this is a genuine cloud
+round-trip in the safety-critical path — it calls an external CarSky host outside
+the room's internal network, directly contradicting CLAUDE.md's own non-negotiable
+principle ("no cloud round-trip... must not depend on external connectivity") and
+adding unpredictable external-hop latency on top of the ≤150ms detection-latency KPI.
+That mechanism has been dropped entirely from this design (see Decision 3) in favor
+of CLAUDE.md's originally-documented local HTTP network-pin.
+
 ## Decisions
 
 ### 1. Track B becomes canonical; Track A is deleted
 
 `main.py` / `score_calculator.py` / `trigger_emitter.py` / `test_dms.py` become the
-one DMS implementation going forward. `dms_detector.py` is deleted.
+one DMS implementation going forward. `dms_detector.py` is deleted outright — no part
+of it (capture loop, EAR stub, or its CarSky-control-plane delivery call) is reused;
+the new delivery mechanism is built fresh in Decision 3.
 
 **Rationale:** Track B already has the correct scoring formula and the state-machine
 hardening (hysteresis/sustain/cooldown) that CLAUDE.md mandates, with 10 passing
-tests. Track A's only advantage — a working delivery mechanism — is ported into
-Track B (see Decision 3) rather than kept as a second file. Maintaining two
-divergent, unconnected implementations for the remaining 13 days is pure risk.
+tests. Maintaining two divergent, unconnected implementations for the remaining 13
+days is pure risk, and Track A's stubbed EAR/delivery code isn't worth carrying
+forward.
 
 **Verified before deletion:** grepped the full repo for `dms_detector` — the only
 reference is a `python dms_detector.py` run command in `README.md`. No code imports
 it. Safe to delete; the README snippet is updated to the `main.py` invocation as
-part of the doc fix in Decision 6.
+part of the doc fix in Decision 8.
 
 ### 2. Real CV inference: full MediaPipe FaceMesh pipeline, not mock-only
 
@@ -73,94 +89,150 @@ real MediaPipe FaceMesh landmark extraction:
 **Rationale:** this is the single largest functional gap in the whole project — both
 prior tracks fake the actual CV inference (a stubbed placeholder or a
 `NotImplementedError`). Without it there is no real demo, only a scripted mock
-sequence. Digital Cockpit's own review principle is evidence over theory; this is
-where the evidence has to come from.
+sequence.
 
-### 3. Trigger delivery: CarSky Shell-Exec API — an *unverified* mechanism, not a proven one
+### 3. Trigger delivery: local HTTP network-pin — Container Node server, Kotlin poll client. No cloud round-trip, no CarSky control-plane call, anywhere.
 
-Track A's `send_trigger()` is **not** a raw local `adb` binary call. It is an HTTP
-POST (Python `requests`) to a CarSky control-plane API —
-`{GATEWAY_URL}/api/v1/vms/{ROOM_ID}/{NODE_KEY}/shell` — whose body specifies a shell
-command (`am broadcast -a com.vitalguard.ai.TRIGGER_ALERT ...`); the CarSky platform
-executes that command on the target Skycraft VM. Renamed in all docs/code as
-**"CarSky Shell-Exec API delivery"** — calling it "ADB broadcast" was misleading
-about what actually has to be network-reachable.
+CLAUDE.md's own non-negotiable principle: *"the entire pipeline runs on-device/edge,
+with no cloud round-trip in the safety-critical path... no network hop leaves the
+environment."* Any mechanism that calls an external CarSky control-plane host (as
+Track A's `send_trigger()` did) violates this outright and puts unpredictable
+external-hop latency into the ≤150ms detection-latency KPI. That mechanism is
+dropped completely — not kept as a fallback, not relabeled, removed from the design.
 
-This is ported into `trigger_emitter.py` as `emit_via_carsky_shell_api()`, built
-from the flat payload fields (Decision 4).
+**Chosen architecture — exactly CLAUDE.md's original documented design:**
 
-**Risk — confirmed unverified (2026-07-28):** this HTTP call has only ever been
-exercised from a dev laptop with normal internet access during Round 1. It has
-**never** been run from inside an actual CarSky Container Node — the real demo
-context. Container Node egress policy and whether `HEADERS`'s auth is
-session/IP-scoped are both unknown.
+- **Container Node (Python):** a new lightweight local HTTP server —
+  `dms-ai-engine/trigger_server.py` — runs alongside the scoring/emitter loop (in the
+  same process, background thread) and exposes `GET /latest-trigger`, returning the
+  most recent trigger payload (see Decision 4/5 for shape and signal types) as a
+  JSON body, or `204 No Content` if nothing new since the last successful poll. It
+  listens only on the room-internal network (the network pin added directly between
+  the Container Node and the Skycraft VM, self-service, no BTC approval needed —
+  same mechanism CLAUDE.md already sanctions for this link). No external host is
+  ever contacted.
+- **Skycraft App (Kotlin):** a new HTTP poll client inside the existing
+  `VitalGuardMonitorService` foreground service. It polls `GET /latest-trigger`
+  every **500 ms**, with a **2 s** per-request timeout, and feeds any new payload
+  directly into `DrowsinessController.kt`. Three consecutive failed/timed-out polls
+  (worst case ≈6 s to detect) means the connection is considered lost — the FSM
+  reverts to a safe baseline (Decision 6). This is a real, observable technical
+  signal (poll failure), not a guessed heartbeat number.
+- **The existing `BroadcastReceiver` (`ClimateOverrideReceiver.kt`) is left in place,
+  untouched, but demoted to a dormant, human-operated on-stage safety net** — per
+  CLAUDE.md's own existing "Demo fallback" tier (`adb shell cmd car_service
+  inject-vhal-event`), a person can still manually run `adb shell am broadcast -a
+  com.vitalguard.ai.TRIGGER_ALERT` if the entire automated pipeline fails live. It is
+  **not** wired to any automated Python sender going forward — no code invests in
+  building that link.
 
-**Mandatory Day-1 task:** deploy `emit_via_carsky_shell_api()` inside a real
-Container Node in the CarSky blueprint and verify the HTTP POST succeeds end-to-end
-(200 response *and* the broadcast observed via `logcat` on the Skycraft VM) before
-building anything further on top of this path.
+**Latency-budget note:** the ≤150ms KPI is the per-frame CV detection/inference
+budget, not the end-to-end onset-to-cockpit-response time — that end-to-end time is
+already dominated by `trigger_emitter.py`'s 2s sustain window, so ~500ms of added
+polling latency is proportionally small (total ≈2.5s onset-to-response), consistent
+with the demo script's minute-scale timeline.
 
-**Documented contingency, not deleted:** if the Container Node cannot reach
-`GATEWAY_URL` (egress blocked, auth scoped to the dev laptop's session/IP),
-CLAUDE.md's original HTTP/WebSocket "network pin" design (Container Node serves a
-local endpoint, App polls/subscribes directly) is the fallback — it is already fully
-specified in CLAUDE.md and is not being deleted from the document, only
-superseded-by-default pending Day-1 verification.
+**Day-1 task:** build and verify this local HTTP network-pin end-to-end — Container
+Node serves `/latest-trigger` on the room-internal network; the App's new poll
+client successfully fetches and parses a synthetic trigger payload and feeds it into
+`DrowsinessController.kt` — before building anything further (FSM hardening,
+gateways) on top of it.
 
-### 4. `contracts/trigger.schema.json`: flat schema, matching Intent-extra type mapping
+### 4. `contracts/trigger.schema.json`: nested JSON, delivered as an HTTP response body
 
-New file, created from scratch (none exists today). **Flattening is a hard technical
-constraint, not a shortcut**: Android Intent extras (`--es`/`--ef`/`--ei`/`--el`) have
-no nested-object support, so CLAUDE.md's original `features: {perclos,
-eyeOpenProbability, headEulerAngleX}` nested shape cannot be sent as broadcast
-extras at all. This must be stated explicitly in the schema file's own
-documentation/comments so it reads as a deliberate constraint, not sloppiness.
+Since the production path is now HTTP JSON (not Android `Intent` broadcast extras),
+the earlier flattening requirement no longer applies — HTTP JSON supports nested
+objects natively, so the schema reverts to CLAUDE.md's original nested shape:
 
-Exact field → type → extra-flag mapping (verified per-field, not assumed uniform):
+```json
+{
+  "timestampMs": 0,
+  "source": "container-python|debug|replay",
+  "score": 0.0,
+  "confidence": 0.0,
+  "state": "NORMAL|WARNING|CRITICAL|UNKNOWN",
+  "features": {
+    "perclos": 0.0,
+    "eyeOpenProbability": 0.0,
+    "headEulerAngleX": 0.0
+  },
+  "reason": "string",
+  "correlationId": "string"
+}
+```
 
-| Field | Type | Extra flag |
-|---|---|---|
-| `timestampMs` | long | `--el` |
-| `source` | string | `--es` |
-| `score` | float | `--ef` |
-| `confidence` | float | `--ef` |
-| `state` | string | `--es` |
-| `perclos` | float | `--ef` |
-| `eyeOpenProbability` | float | `--ef` |
-| `headEulerAngleX` | float | `--ef` |
-| `reason` | string | `--es` |
-| `correlationId` | string | `--es` |
+The `state` enum gains `UNKNOWN` (Decision 5) — CLAUDE.md's own FSM-hardening section
+already uses the language "fall back to an unknown/safe state," so this formalizes
+an existing intent rather than introducing a new concept.
 
-Both `trigger_emitter.py` (Python) and the Kotlin `BroadcastReceiver` parsing logic
-must conform to this exact mapping.
+**Superseded note:** an earlier draft of this decision flattened the schema to match
+Android Intent-extra type limits (`--es`/`--ef`/`--el`), because the default delivery
+path was assumed to be an `am broadcast` command. That assumption no longer holds
+(Decision 3) — no code in this design constructs a shell command or Intent-extra
+payload, so the flat-schema requirement and its associated shell-escaping concern
+(`shlex.quote()`) are both moot and removed.
 
-### 5. Kotlin FSM: thin scope — idempotency + fallback + crash-safety, not full hysteresis
+### 5. Emission model: add explicit RECOVERED and UNKNOWN signals, not just single-shot CRITICAL
+
+`TriggerEmitter.update()` today only returns `True` once, on the rising edge into
+CRITICAL (verified in `trigger_emitter.py:31-46`) — there is no signal at all for
+recovery or for a lost/undetectable face. Relying on a guessed timeout to infer
+either condition on the Kotlin side would revert HVAC/voice to baseline **while a
+driver is still critically drowsy**, which is the opposite of the safety intent. So
+the emission model itself is extended:
+
+- **RECOVERED:** emit once on the down-edge, mirroring the existing up-edge emit —
+  when score drops to `≤ exit_threshold` (the same point where `_armed` currently
+  becomes `True` silently), emit a payload with `state="WARNING"` or `"NORMAL"`
+  (whichever the score justifies) and a fresh `correlationId`.
+- **UNKNOWN (lost face):** when MediaPipe reports no face for a sustained period
+  (a new, separate threshold — proposed default: same 2.0s `sustain_seconds` used
+  for CRITICAL, to keep one mental model for "how long is long enough to act on"),
+  emit once with `state="UNKNOWN"`, `reason="lost_face"`.
+
+This gives the Kotlin FSM (Decision 6) explicit signals to act on for the *normal*
+recovery/lost-face paths, and confines connection-loss detection to the poll client's
+own consecutive-failure count (Decision 3) — two distinct, independently-observable
+failure modes (data-quality vs. connectivity), each with its own signal, rather than
+one overloaded timeout guess.
+
+### 6. Kotlin FSM: thin scope — latch-until-explicit-signal, not hysteresis duplication
 
 `DrowsinessController.kt` (does not exist today — built from scratch) does **not**
-re-implement hysteresis/debounce/cooldown. `trigger_emitter.py` already guarantees
-that any broadcast received represents a sustained, hysteresis-gated state — Kotlin
-trusts that guarantee rather than duplicating it.
+re-implement hysteresis/debounce/cooldown; `trigger_emitter.py` already guarantees
+any CRITICAL payload represents a sustained, hysteresis-gated state.
 
 What Kotlin owns:
-- **Idempotency:** dedupe by `correlationId` — a repeated/duplicate broadcast of the
-  same state does not re-fire the gateways a second time.
-- **Fallback:** a heartbeat timeout — if no broadcast arrives within N seconds of the
-  last CRITICAL state, revert to a safe baseline (AC off, fan 2, temp 25°C, stop
-  voice alert) rather than holding CRITICAL indefinitely or fabricating a new alert
-  from missing data.
+- **Latch-until-explicit-signal:** on receiving CRITICAL, fire the gateways and hold
+  that state until an explicit `RECOVERED` or `UNKNOWN` payload arrives (Decision 5)
+  — not a timeout guess.
+- **Connection-loss fallback:** 3 consecutive poll failures (Decision 3) → revert to
+  a safe baseline (AC off, fan 2, temp 25°C, stop voice alert), distinct in the debug
+  overlay/logs from an explicit `UNKNOWN` (lost-face) revert, even though both lead
+  to the same gateway action.
+- **Idempotency:** dedupe by `correlationId` — a repeated/duplicate delivery of the
+  same payload (e.g. a retried poll) does not re-fire the gateways a second time.
 - **Crash-safety:** if a gateway call throws (Real gateway VHAL/AudioManager
-  failure), the controller catches it, logs it, and continues running — it does not
-  crash the app.
+  failure), the controller catches it, logs it, does **not** crash, and does **not**
+  retry the same call — it stays in its current tracked state and acts again only on
+  the next state transition or next payload. No retry loop, to avoid masking a
+  persistently broken Real gateway behind silent repeated attempts; a broken Real
+  gateway is exactly what `GATEWAY_MODE` exists to let the team fall back away from
+  within seconds.
+- **Debug-overlay visibility on gateway failure:** a caught gateway exception must
+  update the overlay-visible "last gateway action" field to something like `"last
+  action: FAILED (see log)"` — CLAUDE.md's mandatory debug overlay already requires
+  showing the last gateway action, and a silent logcat-only failure means nobody
+  watching the demo knows `GATEWAY_MODE` needs to be flipped to Fake.
 
 **Rationale:** with zero existing Kotlin FSM footprint and 13 days left, building the
-full 5-property hardening (debounce/hysteresis/cooldown/idempotency/fallback)
-independently on the Kotlin side would mean designing, building, and testing from
-scratch a second copy of logic that already works and is unit-tested in Python. The
-thin scope closes the one real gap — a single bad/duplicate delivery still directly
-double-firing HVAC/voice, or a dead trigger stream leaving the cabin stuck in
-CRITICAL — without duplicating proven logic.
+full 5-property hardening independently on the Kotlin side would mean duplicating
+logic that already works and is unit-tested in Python. The thin scope closes the
+real gaps — duplicate delivery double-firing HVAC/voice, a dead connection leaving
+the cabin stuck in CRITICAL, a silent gateway failure going unnoticed — without
+duplicating proven logic.
 
-### 6. Fake/Real gateway split: built now
+### 7. Fake/Real gateway split: built now
 
 `ClimateActuatorGateway` / `VoiceAlertGateway` interfaces, each with `Fake*`/`Real*`
 implementations. `Real*` wraps the *existing* `ClimateOverrideReceiver` /
@@ -173,7 +245,7 @@ on stage.
 tests assert against a `Fake`, not a live VHAL call — and it's what CLAUDE.md's
 Go/No-Go criteria require as a demo-safety fallback.
 
-### 7. Documentation: minimal fixes now, full docs deferred to day 9 (already scheduled)
+### 8. Documentation: minimal fixes now, full docs deferred to day 9 (already scheduled)
 
 In scope now (fixing stale/broken state, not new authoring):
 - `README.md`'s `python dms_detector.py` run instruction → updated to the `main.py`
@@ -181,9 +253,16 @@ In scope now (fixing stale/broken state, not new authoring):
 - `CLAUDE.md`'s "Implementation Status" section corrected to stop claiming
   `DrowsinessController.kt`/gateway files/tests exist under names that were never
   built.
-- `CLAUDE.md`'s "Trigger Delivery" section updated: CarSky Shell-Exec API delivery
-  as the default path (Decision 3), network-pin kept as documented contingency.
-- `CLAUDE.md`'s schema description updated to the flat shape (Decision 4).
+- `CLAUDE.md`'s "Trigger Delivery" section updated to describe the local HTTP
+  network-pin exactly as implemented (Decision 3), and to explicitly state that the
+  CarSky control-plane delivery mechanism was considered and rejected for violating
+  the no-cloud-round-trip principle — not silently dropped.
+- `CLAUDE.md`'s schema description updated to the nested shape (Decision 4), with
+  the `UNKNOWN` state value added.
+- A note that `ClimateOverrideReceiver.kt`'s `BroadcastReceiver` is intentionally
+  kept as a dormant, human-operated on-stage fallback only (Decision 3) — so nobody
+  mistakes it for a still-live automated path or invests further engineering effort
+  wiring it up.
 - A "Known Deviations from Proposal" note added to CLAUDE.md's Reference Basis
   section, with a prepared judge-facing answer for the MediaPipe-vs-MobileNetV3
   deviation:
@@ -200,41 +279,50 @@ Deferred to the already-scheduled day 9 (07/08) slot: full `docs/` authoring
 [Camera/video] → MediaPipe FaceMesh → score_calculator.py (real EAR/PERCLOS/head-pose)
                                             │
                                      trigger_emitter.py
-                                     (hysteresis 0.85/0.50, 2s sustain, 10s cooldown)
-                                            │  emit_via_carsky_shell_api()
+                                     (hysteresis 0.85/0.50, 2s sustain, 10s cooldown;
+                                      + RECOVERED on down-edge; + UNKNOWN on lost-face)
+                                            │  updates in-memory "latest trigger" state
                                             ▼
-                    HTTP POST {GATEWAY_URL}/api/v1/vms/{ROOM_ID}/{NODE_KEY}/shell
-                       body: am broadcast -a com.vitalguard.ai.TRIGGER_ALERT
-                             --el timestampMs --es source --ef score --ef confidence
-                             --es state --ef perclos --ef eyeOpenProbability
-                             --ef headEulerAngleX --es reason --es correlationId
-                    [UNVERIFIED from inside a Container Node — Day-1 test required;
-                     falls back to CLAUDE.md's network-pin design if unreachable]
+                     trigger_server.py — local HTTP server (Container Node, new)
+                        GET /latest-trigger → nested JSON per contracts/trigger.schema.json
+                                               (200) or 204 if nothing new
+                        [room-internal network pin only — no external host, ever]
                                             ▼
-                    VitalGuardMonitorService (foreground, dynamic receiver — unchanged)
+                    VitalGuardMonitorService — new HTTP poll client (Kotlin, new)
+                        polls every 500ms, 2s timeout/request
+                        3 consecutive failures → connection-lost → safe baseline
                                             ▼
                               DrowsinessController.kt (thin FSM — new)
-                    idempotency (dedupe by correlationId) + heartbeat fallback
-                                    + gateway-exception crash-safety
+                    latch CRITICAL until explicit RECOVERED/UNKNOWN/connection-lost
+                          + idempotency (correlationId) + gateway-exception
+                            crash-safety, surfaced in the debug overlay
                                     ├─ ClimateActuatorGateway (Fake/Real, GATEWAY_MODE — new)
                                     └─ VoiceAlertGateway (Fake/Real, GATEWAY_MODE — new)
+
+[Dormant, unchanged: ClimateOverrideReceiver.kt's BroadcastReceiver still exists and
+ still responds to a manually-typed `adb shell am broadcast -a
+ com.vitalguard.ai.TRIGGER_ALERT`, kept only as a human-operated on-stage safety net
+ per CLAUDE.md's existing "Demo fallback" tier — not wired to any automated sender.]
 ```
 
 ## Error handling / edge cases
 
-- **Shell-Exec API delivery failing** (Container Node unreachable, non-200 response,
-  request exception) → `trigger_emitter.py` logs the exact result (status code or
-  exception) and continues its own state machine; it does not crash the pipeline on
-  a delivery failure.
-- **No broadcast ever reaching Kotlin** (lost face, dropped frames, network-pin
-  contingency not yet built, Shell-Exec API down) → the heartbeat timeout is the
-  single source of truth for "unknown/safe" — there is no separate no-signal code
-  path to keep in sync with it.
-- **Duplicate/replayed broadcasts** (e.g. a flaky HTTP retry re-sending the same
-  command) → `correlationId` dedupe absorbs them without a second HVAC/voice trigger.
+- **HTTP server unreachable / connection lost** (Container Node down, network pin
+  drops) → detected client-side via 3 consecutive failed/timed-out polls (2s
+  timeout each, ≈6s worst case) — a real technical signal, not a guessed heartbeat.
+  FSM reverts to safe baseline.
+- **Lost face** (camera/MediaPipe stops detecting a face for a sustained period) →
+  explicit `UNKNOWN` signal from Python (Decision 5), distinct in cause from a dead
+  connection even though the FSM outcome (revert to safe baseline) is the same —
+  the debug overlay/logs show which one actually happened.
+- **Recovery** → explicit `RECOVERED` signal on the down-edge; FSM reverts to safe
+  baseline immediately on receipt, without waiting on any timeout.
+- **Duplicate/replayed payloads** (e.g. a retried poll returning the same trigger
+  twice) → `correlationId` dedupe absorbs them without a second HVAC/voice trigger.
 - **Gateway call throws** (Real VHAL/AudioManager failure) → caught and logged by
-  `DrowsinessController.kt`; the controller keeps running rather than crashing the
-  app.
+  `DrowsinessController.kt`, surfaced in the debug overlay's "last gateway action"
+  field as `FAILED`; the controller keeps running rather than crashing the app, and
+  does not retry.
 
 ## Testing
 
@@ -242,29 +330,37 @@ Deferred to the already-scheduled day 9 (07/08) slot: full `docs/` authoring
 - Existing 10 tests in `test_dms.py` stay as-is.
 - New tests for the real MediaPipe EAR/head-pose path (fixture video or synthetic
   landmark input asserting expected EAR/head-pose values).
-- New tests for `emit_via_carsky_shell_api()`: mock `requests.post`, assert the exact
-  command string and extras constructed from a given `TriggerPayload`, per the
-  Decision 4 type-mapping table (in particular, `timestampMs` must appear as `--el`,
-  not `--ef`).
+- New tests for `TriggerEmitter`: emits `RECOVERED` exactly once on the down-edge
+  (mirroring the existing up-edge test), emits `UNKNOWN` after a sustained lost-face
+  period, does not double-emit either.
+- New tests for `trigger_server.py`: serves the correct latest payload on `GET
+  /latest-trigger`, returns `204` when nothing new, matches the nested schema
+  exactly (including the `UNKNOWN` state value).
 
 **Kotlin** (`aaos-cockpit-app/`), `DrowsinessControllerTest.kt` against
 `FakeClimateActuatorGateway`/`FakeVoiceAlertGateway`:
 1. Normal operation — score/state below threshold → gateways never called.
-2. Idempotency — repeated CRITICAL broadcast with the same `correlationId` → gateway
+2. Idempotency — repeated CRITICAL payload with the same `correlationId` → gateway
    called exactly once.
-3. Fallback — broadcast stream stops → controller reverts to safe state and instructs
-   gateways to revert, without a new incoming trigger.
-4. Gateway failure — `Fake*Gateway` throws → controller catches it, logs it, does not
-   crash, and does **not** retry the same call — it stays in its current tracked
-   state and will act again on the next state transition or next broadcast. No
-   retry loop, to avoid masking a persistently broken Real gateway behind silent
-   repeated attempts; a broken Real gateway is exactly what `GATEWAY_MODE` exists to
-   let the team fall back away from within seconds.
+3. Explicit RECOVERED — reverts to safe baseline immediately on receipt.
+4. Explicit UNKNOWN (lost-face) — reverts to safe baseline immediately on receipt.
+5. Connection-lost (3 simulated consecutive poll failures) — reverts to safe
+   baseline without ever receiving an explicit RECOVERED/UNKNOWN payload.
+6. Gateway failure — `Fake*Gateway` throws → controller catches it, logs it, does
+   not crash, does not retry, and the debug-overlay-visible last-action field shows
+   `FAILED`.
+
+New poll-client tests: parses a valid nested JSON payload correctly; treats a `204`
+or malformed response as "no new trigger" (not a poll failure); correctly counts
+consecutive failures and resets the count on any successful poll.
 
 ## Out of scope for this design
 
-- Full 5-property Kotlin FSM hardening (Decision 5) — explicitly deferred; Python
+- Full 5-property Kotlin FSM hardening (Decision 6) — explicitly deferred; Python
   already owns hysteresis/debounce/cooldown.
+- WebSocket upgrade — simple HTTP polling was chosen over a persistent WebSocket
+  connection for 13-day pragmatism (no connection-lifecycle/reconnect logic to build
+  and debug under time pressure). Worth revisiting post-deadline, not now.
 - `script-node/` Luau VHAL Bridge Service (CLAUDE.md's "Option C") — untouched by
   this design; HVAC writes continue going directly from
   `ClimateActuatorGateway.Real` to `CarPropertyManager`.
@@ -272,3 +368,6 @@ Deferred to the already-scheduled day 9 (07/08) slot: full `docs/` authoring
 - Committing Track B's files is included in this design's implementation (it must
   be committed once reconciled), but broader git hygiene/branching strategy is out
   of scope here.
+- The CarSky control-plane Shell-Exec mechanism is dropped entirely, including as an
+  automated fallback — the only remaining fallback tier is the pre-existing, manual,
+  human-typed `adb shell am broadcast` safety net, which requires no new code.
