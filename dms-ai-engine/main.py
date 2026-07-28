@@ -21,6 +21,7 @@ contracts/trigger.schema.json + docs/superpowers/specs/... Decision 3/4).
 import argparse
 import csv
 import math
+import signal
 import time
 from pathlib import Path
 
@@ -29,6 +30,23 @@ from trigger_emitter import TriggerEmitter, FacePresenceTracker
 from trigger_server import LatestTriggerStore, start_background_server
 
 TRIGGER_SCHEMA_VERSION = "1.0"
+
+# A container's main process runs as PID 1 — Linux does NOT apply the default
+# terminate-on-SIGTERM disposition to PID 1 unless a handler is registered.
+# Confirmed empirically: without this, `docker stop` had to fall back to
+# SIGKILL after the full grace period (exit code 137) instead of an immediate
+# clean exit. Both run_mock_stream and run_real_video check this flag every
+# iteration so a long-running container stops promptly.
+_shutdown_requested = False
+
+
+def _handle_shutdown_signal(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+
+
+signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+signal.signal(signal.SIGINT, _handle_shutdown_signal)
 
 
 def _state_for_score(score: float, enter_threshold: float = 0.85, exit_threshold: float = 0.50) -> str:
@@ -84,6 +102,8 @@ def run_mock_stream(out_csv: Path, host: str = "0.0.0.0", port: int = 8765) -> N
             writer.writerow(["ts", "eye_closed_now", "head_pitch", "score", "state", "signal"])
             t = 0.0
             for frame in scenario:
+                if _shutdown_requested:
+                    break
                 frame.timestamp = t
                 score = calc.add_frame(frame)
                 signal = emitter.update(score, now=t)
@@ -153,6 +173,8 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None
             writer = csv.writer(f)
             writer.writerow(["ts", "has_face", "ear", "head_pitch", "score", "state", "signal"])
             while cap.isOpened():
+                if _shutdown_requested:
+                    break
                 ret, frame = cap.read()
                 if not ret:
                     break

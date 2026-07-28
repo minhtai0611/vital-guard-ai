@@ -167,6 +167,56 @@ def test_run_real_video_emits_unknown_after_sustained_lost_face(tmp_path, monkey
     )
 
 
+def test_sigterm_handler_sets_shutdown_flag():
+    """Confirmed via a real `docker stop` against this exact container image:
+    a plain Python script running as PID 1 in a container does NOT get the
+    default terminate-on-SIGTERM behavior — Linux only applies the default
+    disposition to non-PID-1 processes. Without an explicit handler, `docker
+    stop` had to fall back to SIGKILL after the full grace period (measured:
+    exit code 137, ~6s instead of an immediate clean exit). This test locks in
+    the fix: an explicit handler that flips a checked-every-iteration flag."""
+    import main as main_module
+
+    main_module._shutdown_requested = False
+    try:
+        main_module._handle_shutdown_signal(15, None)  # 15 == signal.SIGTERM
+        assert main_module._shutdown_requested is True
+    finally:
+        main_module._shutdown_requested = False
+
+
+def test_run_mock_stream_stops_early_when_shutdown_requested(tmp_path):
+    import main as main_module
+
+    main_module._shutdown_requested = True
+    try:
+        out_csv = tmp_path / "out.csv"
+        main_module.run_mock_stream(out_csv, host="127.0.0.1", port=0)
+        rows = out_csv.read_text(encoding="utf-8").strip().splitlines()[1:]
+        assert len(rows) == 0, "no frame should be processed once shutdown was already requested"
+    finally:
+        main_module._shutdown_requested = False
+
+
+def test_run_real_video_stops_early_when_shutdown_requested(tmp_path, monkeypatch):
+    import cv2
+    import mediapipe
+    import main as main_module
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture([frame] * 90, fps=30.0))
+    monkeypatch.setattr(mediapipe, "solutions", _fake_mediapipe_with_no_face_ever(), raising=False)
+
+    main_module._shutdown_requested = True
+    try:
+        out_csv = tmp_path / "out.csv"
+        main_module.run_real_video("does-not-matter.mp4", out_csv, host="127.0.0.1", port=0)
+        rows = out_csv.read_text(encoding="utf-8").strip().splitlines()[1:]
+        assert len(rows) == 0, "no frame should be processed once shutdown was already requested"
+    finally:
+        main_module._shutdown_requested = False
+
+
 def test_average_ear_and_state_agree_for_synthetic_closed_eyes():
     from eye_state import average_ear
     # Both eyes flat/closed shape, indices padded so LEFT/RIGHT_EYE_INDICES resolve.
