@@ -37,6 +37,17 @@ def estimate_pitch_deg(landmarks: List[Tuple[float, float]], frame_width: int, f
     reasonable engineering default for this use case, but the absolute pitch
     value should be treated as approximate, not metrologically validated,
     until/unless calibrated against the actual deployment camera.
+
+    NOTE: the Euler extraction below (`atan2(R[2,1], R[2,2])`) is deliberately
+    sensitive to rotation about the model's local X axis (MODEL_3D_POINTS'
+    ear-to-ear / interaural axis, since the eye corners sit at X=-43.3/+43.3)
+    -- the axis a physical head nod actually rotates about -- and is blind to
+    rotation about the local Y axis (vertical, turning the head left/right,
+    i.e. yaw). An earlier version of this function used
+    `atan2(-R[2,0], sqrt(R[0,0]**2 + R[1,0]**2))`, which is the mirror image:
+    sensitive to Y (yaw), blind to X (pitch) -- i.e. it was silently returning
+    yaw instead of pitch. See test_head_pose.py's
+    test_pitch_is_insensitive_to_pure_yaw_rotation for the regression guard.
     """
     image_points = np.array(
         [landmarks[i] for i in MODEL_LANDMARK_INDICES], dtype=np.float64
@@ -58,6 +69,5 @@ def estimate_pitch_deg(landmarks: List[Tuple[float, float]], frame_width: int, f
         return 0.0
 
     rotation_matrix, _ = cv2.Rodrigues(rotation_vec)
-    sy = math.sqrt(rotation_matrix[0, 0] ** 2 + rotation_matrix[1, 0] ** 2)
-    pitch_rad = math.atan2(-rotation_matrix[2, 0], sy)
+    pitch_rad = math.atan2(rotation_matrix[2, 1], rotation_matrix[2, 2])
     return math.degrees(pitch_rad)
