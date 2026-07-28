@@ -29,6 +29,15 @@ MODEL_3D_POINTS = np.array([
 
 
 def estimate_pitch_deg(landmarks: List[Tuple[float, float]], frame_width: int, frame_height: int) -> float:
+    """Estimate head pitch in degrees from 2D landmarks via solvePnP.
+
+    NOTE: the camera intrinsics below (focal_length = frame_width, principal
+    point at the frame center, zero lens distortion) are a standard pinhole
+    approximation, not a real per-device camera calibration. This is a
+    reasonable engineering default for this use case, but the absolute pitch
+    value should be treated as approximate, not metrologically validated,
+    until/unless calibrated against the actual deployment camera.
+    """
     image_points = np.array(
         [landmarks[i] for i in MODEL_LANDMARK_INDICES], dtype=np.float64
     )
