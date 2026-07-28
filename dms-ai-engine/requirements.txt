@@ -1,5 +1,21 @@
-opencv-python
-mediapipe
-numpy
-requests
-jsonschema
+# Pinned 2026-07-28 after verifying real behavior on both Windows (dev) and Linux
+# (container). Do not add a separate opencv-python/opencv-python-headless line:
+# mediapipe pulls opencv-contrib-python transitively (a superset covering every
+# cv2 API this repo uses — solvePnP, Rodrigues, VideoCapture, cvtColor), and
+# installing a second cv2-providing package alongside it causes an import
+# conflict on Linux (confirmed: ImportError: libxcb.so.1, even with
+# opencv-python-headless, because mediapipe's own opencv-contrib-python wins
+# the shared cv2 namespace anyway).
+#
+# mediapipe==0.10.14 is pinned, not the latest (1.0.0), because 1.0.0 (and even
+# 0.10.35) dropped the legacy `mediapipe.solutions` Python API entirely from
+# their Windows wheel (confirmed: only `Image`/`ImageFormat`/`tasks` exposed,
+# no `solutions` at all) — main.py's run_real_video() uses
+# mp.solutions.face_mesh.FaceMesh(), so a newer mediapipe would break it on
+# Windows dev machines. On Linux, 0.10.14 still ships mediapipe.python.solutions
+# and works correctly once the system libs in ../Dockerfile are installed
+# (libgl1, libglib2.0-0, libsm6, libxext6, libxrender1, libxcb1, libgomp1).
+mediapipe==0.10.14
+numpy==2.5.1
+requests==2.32.5
+jsonschema==4.26.0

@@ -20,6 +20,7 @@ contracts/trigger.schema.json + docs/superpowers/specs/... Decision 3/4).
 """
 import argparse
 import csv
+import math
 import time
 from pathlib import Path
 
@@ -126,13 +127,25 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None
         min_detection_confidence=0.5, min_tracking_confidence=0.5,
     )
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        server.shutdown()
+        raise RuntimeError(
+            f"Could not open video file: {video_path} "
+            "(bad path, or a codec/container OpenCV's build doesn't support)"
+        )
     calc = DrowsinessScoreCalculator(window_seconds=2.0, sample_hz=10.0)
     emitter = TriggerEmitter(enter_threshold=0.85, exit_threshold=0.50,
                               sustain_seconds=2.0, cooldown_seconds=10.0)
     face_tracker = FacePresenceTracker(sustain_seconds=2.0)
     event_counter = 0
     t = 0.0
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    # `fps or 30.0` only catches falsy values (0/None) — a negative number or
+    # NaN is truthy in Python and would silently corrupt the timestamp
+    # progression (frame_dt going negative or NaN), breaking TriggerEmitter's
+    # sustain-window timing. Validate the value itself, not just its truthiness.
+    if not math.isfinite(fps) or fps <= 0:
+        fps = 30.0
     frame_dt = 1.0 / fps
 
     try:
