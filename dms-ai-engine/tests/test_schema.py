@@ -4,7 +4,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-SCHEMA_PATH = Path(__file__).parent.parent / "contracts" / "trigger.schema.json"
+SCHEMA_PATH = Path(__file__).parent.parent.parent / "contracts" / "trigger.schema.json"
 
 
 @pytest.fixture

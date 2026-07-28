@@ -22,7 +22,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY score_calculator.py trigger_emitter.py trigger_server.py eye_state.py head_pose.py main.py ./
+COPY services/ ./services/
+COPY main.py ./
 
 # The room-internal network-pin endpoint (GET /latest-trigger) — see
 # docs/superpowers/specs/2026-07-28-dms-delivery-fsm-reconciliation-design.md

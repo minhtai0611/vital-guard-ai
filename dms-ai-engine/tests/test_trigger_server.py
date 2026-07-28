@@ -4,7 +4,7 @@ import urllib.error
 
 import pytest
 
-from trigger_server import LatestTriggerStore, start_background_server
+from services.trigger_server import LatestTriggerStore, start_background_server
 
 
 @pytest.fixture

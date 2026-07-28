@@ -25,9 +25,9 @@ import signal
 import time
 from pathlib import Path
 
-from score_calculator import DrowsinessScoreCalculator, FrameFeatures
-from trigger_emitter import TriggerEmitter, FacePresenceTracker
-from trigger_server import LatestTriggerStore, start_background_server
+from services.score_calculator import DrowsinessScoreCalculator, FrameFeatures
+from services.trigger_emitter import TriggerEmitter, FacePresenceTracker
+from services.trigger_server import LatestTriggerStore, start_background_server
 
 TRIGGER_SCHEMA_VERSION = "1.0"
 
@@ -137,8 +137,8 @@ def run_mock_stream(out_csv: Path, host: str = "0.0.0.0", port: int = 8765) -> N
 def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None:
     import cv2
     import mediapipe as mp
-    from eye_state import average_ear, eye_open_probability, EAR_CLOSED_THRESHOLD
-    from head_pose import estimate_pitch_deg  # Task 8
+    from services.eye_state import average_ear, eye_open_probability, EAR_CLOSED_THRESHOLD
+    from services.head_pose import estimate_pitch_deg  # Task 8
 
     store = LatestTriggerStore()
     server = start_background_server(store, host=host, port=port)

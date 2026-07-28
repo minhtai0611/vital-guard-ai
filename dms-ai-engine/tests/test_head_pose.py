@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from head_pose import estimate_pitch_deg, MODEL_LANDMARK_INDICES, MODEL_3D_POINTS
+from services.head_pose import estimate_pitch_deg, MODEL_LANDMARK_INDICES, MODEL_3D_POINTS
 
 
 def _camera_matrix(width, height):
@@ -148,5 +148,5 @@ def test_pitch_is_insensitive_to_pure_yaw_rotation():
 def test_returns_zero_when_solvepnp_fails():
     w, h = 640, 480
     landmarks = _landmarks_for_x_angle(0, w, h)
-    with patch("head_pose.cv2.solvePnP", return_value=(False, None, None)):
+    with patch("services.head_pose.cv2.solvePnP", return_value=(False, None, None)):
         assert estimate_pitch_deg(landmarks, w, h) == 0.0

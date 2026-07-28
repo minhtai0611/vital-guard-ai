@@ -1,4 +1,4 @@
-from eye_state import compute_ear
+from services.eye_state import compute_ear
 
 # 6-point layout per eye, MediaPipe FaceMesh index order: [outer_corner, top_1,
 # top_2, inner_corner, bottom_2, bottom_1] — matches the classic

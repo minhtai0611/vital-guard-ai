@@ -3,8 +3,8 @@ Chạy: pytest test_dms.py -v
 Không cần Android/CarSky/video thật — đây là bằng chứng "test evidence"
 đầu tiên có thể bỏ vào evidence/ ngay hôm nay.
 """
-from score_calculator import DrowsinessScoreCalculator, FrameFeatures
-from trigger_emitter import TriggerEmitter, FacePresenceTracker
+from services.score_calculator import DrowsinessScoreCalculator, FrameFeatures
+from services.trigger_emitter import TriggerEmitter, FacePresenceTracker
 
 
 # ---------- DrowsinessScoreCalculator ----------

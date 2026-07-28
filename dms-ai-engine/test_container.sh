@@ -48,7 +48,7 @@ echo "OK: --mock ran cleanly inside the container (2 events, matches dev-machine
 
 echo "[3/4] Testing /latest-trigger reachability through Docker's port mapping..."
 docker run -d --name "$CONTAINER" -p "$PORT:8765" --entrypoint python "$IMAGE" -c "
-from trigger_server import LatestTriggerStore, start_background_server
+from services.trigger_server import LatestTriggerStore, start_background_server
 import time
 store = LatestTriggerStore()
 start_background_server(store, host='0.0.0.0', port=8765)

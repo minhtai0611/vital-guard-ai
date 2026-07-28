@@ -8,7 +8,7 @@ from pathlib import Path
 
 from main import build_trigger_payload
 
-SCHEMA_PATH = Path(__file__).parent.parent / "contracts" / "trigger.schema.json"
+SCHEMA_PATH = Path(__file__).parent.parent.parent / "contracts" / "trigger.schema.json"
 
 
 class _FakeVideoCapture:
@@ -218,9 +218,9 @@ def test_run_real_video_stops_early_when_shutdown_requested(tmp_path, monkeypatc
 
 
 def test_average_ear_and_state_agree_for_synthetic_closed_eyes():
-    from eye_state import average_ear
+    from services.eye_state import average_ear
     # Both eyes flat/closed shape, indices padded so LEFT/RIGHT_EYE_INDICES resolve.
-    import eye_state
+    from services import eye_state
     landmarks = [(0.0, 0.0)] * 468
     closed_shape = [(0.0, 0.15), (0.10, 0.14), (0.20, 0.14), (0.30, 0.15), (0.20, 0.16), (0.10, 0.16)]
     for i, idx in enumerate(eye_state.LEFT_EYE_INDICES):
