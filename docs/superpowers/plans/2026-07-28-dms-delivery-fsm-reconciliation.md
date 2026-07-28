@@ -1750,7 +1750,17 @@ already documented in `README.md`, now re-pointed at the new gateway.
           if (intent.action != ACTION_TRIGGER_ALERT) return
           val score = intent.getFloatExtra("drowsiness_score", 0f)
           Log.w(TAG, "Manual fallback TRIGGER_ALERT received. Score: $score")
-          RealClimateActuatorGateway(context).applyDrowsinessOverride()
+          try {
+              RealClimateActuatorGateway(context).applyDrowsinessOverride()
+          } catch (t: Throwable) {
+              // RealClimateActuatorGateway rethrows (needed for DrowsinessController's
+              // crash-safety, Task 14) — but THIS path is the dormant manual on-stage
+              // fallback, invoked only when everything else has already failed, so it
+              // must not itself crash the service. Restores the crash-safety the
+              // original onReceive had (see the 2026-07-24 NoSuchMethodError fix this
+              // class's history documents).
+              Log.e(TAG, "Manual fallback climate override failed: ${t.message}")
+          }
           voiceAssistant?.executeVoiceIntervention()
       }
   }
