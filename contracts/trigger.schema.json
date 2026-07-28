@@ -6,7 +6,7 @@
   "required": ["timestampMs", "source", "score", "confidence", "state", "features", "reason", "correlationId"],
   "properties": {
     "timestampMs": { "type": "integer", "description": "Epoch milliseconds." },
-    "source": { "type": "string", "enum": ["container-python", "debug", "replay"] },
+    "source": { "type": "string", "enum": ["container-python", "debug", "replay", "mock-stream"] },
     "score": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
     "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
     "state": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL", "UNKNOWN"] },
