@@ -45,15 +45,15 @@ def test_baseline_calibration_removes_seat_tilt_offset():
 
 def test_no_trigger_before_sustain_window_elapses():
     emitter = TriggerEmitter(sustain_seconds=2.0, cooldown_seconds=10.0)
-    assert emitter.update(0.9, now=0.0) is False
-    assert emitter.update(0.9, now=1.0) is False
+    assert emitter.update(0.9, now=0.0) is None
+    assert emitter.update(0.9, now=1.0) is None
 
 
 def test_trigger_fires_once_after_sustain():
     emitter = TriggerEmitter(sustain_seconds=2.0, cooldown_seconds=10.0)
     emitter.update(0.9, now=0.0)
     emitter.update(0.9, now=1.0)
-    assert emitter.update(0.9, now=2.1) is True
+    assert emitter.update(0.9, now=2.1) == "CRITICAL"
 
 
 def test_no_duplicate_trigger_while_still_above_threshold():
@@ -61,8 +61,8 @@ def test_no_duplicate_trigger_while_still_above_threshold():
     emitter.update(0.9, now=0.0)
     fired_first = emitter.update(0.9, now=2.1)
     fired_again = emitter.update(0.9, now=3.0)
-    assert fired_first is True
-    assert fired_again is False, "không được trigger lặp khi vẫn đang ở episode cũ"
+    assert fired_first == "CRITICAL"
+    assert fired_again is None, "không được trigger lặp khi vẫn đang ở episode cũ"
 
 
 def test_trigger_rearms_after_dropping_below_exit_threshold():
@@ -73,8 +73,8 @@ def test_trigger_rearms_after_dropping_below_exit_threshold():
     emitter.update(0.9, now=0.0)
     emitter.update(0.9, now=2.1)          # fire lần 1
     emitter.update(0.3, now=5.0)          # rơi dưới exit -> re-arm (driver tỉnh táo lại)
-    assert emitter.update(0.9, now=5.1) is False   # chưa sustain đủ lại
-    assert emitter.update(0.9, now=7.2) is True    # sustain đủ (>=2s) và qua cooldown (>=3s kể từ 2.1) -> fire lần 2
+    assert emitter.update(0.9, now=5.1) is None    # chưa sustain đủ lại
+    assert emitter.update(0.9, now=7.2) == "CRITICAL"    # sustain đủ (>=2s) và qua cooldown (>=3s kể từ 2.1) -> fire lần 2
 
 
 def test_hysteresis_prevents_flicker_around_0_85():
@@ -87,7 +87,7 @@ def test_hysteresis_prevents_flicker_around_0_85():
         score = 0.86 if i % 2 == 0 else 0.84  # không bao giờ rơi xuống exit_threshold=0.50
         fired_any = fired_any or emitter.update(score, now=t)
         t += 0.3
-    assert fired_any is False
+    assert fired_any is None
 
 
 def test_short_dip_below_enter_but_above_exit_resets_sustain_timer():
@@ -97,5 +97,36 @@ def test_short_dip_below_enter_but_above_exit_resets_sustain_timer():
     emitter.update(0.9, now=0.0)
     emitter.update(0.9, now=1.5)
     emitter.update(0.7, now=1.6)   # tụt xuống nhưng vẫn trên exit -> above_since reset về None
-    assert emitter.update(0.9, now=1.7) is False   # mới bắt đầu sustain lại
-    assert emitter.update(0.9, now=3.8) is True    # đủ 2.1s kể từ 1.7 -> fire
+    assert emitter.update(0.9, now=1.7) is None    # mới bắt đầu sustain lại
+    assert emitter.update(0.9, now=3.8) == "CRITICAL"    # đủ 2.1s kể từ 1.7 -> fire
+
+
+def test_update_returns_critical_string_on_fire():
+    emitter = TriggerEmitter(sustain_seconds=2.0, cooldown_seconds=10.0)
+    emitter.update(0.9, now=0.0)
+    result = emitter.update(0.9, now=2.1)
+    assert result == "CRITICAL"
+
+
+def test_update_returns_none_when_not_firing():
+    emitter = TriggerEmitter(sustain_seconds=2.0, cooldown_seconds=10.0)
+    assert emitter.update(0.9, now=0.0) is None
+
+
+def test_recovered_fires_once_on_down_edge_after_critical():
+    emitter = TriggerEmitter(enter_threshold=0.85, exit_threshold=0.50,
+                              sustain_seconds=2.0, cooldown_seconds=10.0)
+    emitter.update(0.9, now=0.0)
+    assert emitter.update(0.9, now=2.1) == "CRITICAL"
+    # score drops to/below exit_threshold -> RECOVERED fires exactly once
+    assert emitter.update(0.3, now=5.0) == "RECOVERED"
+    assert emitter.update(0.3, now=5.1) is None, "must not repeat RECOVERED every call"
+
+
+def test_recovered_does_not_fire_without_a_prior_critical():
+    """Dropping below exit_threshold when no CRITICAL ever fired (e.g. driver was
+    never drowsy) must not emit a spurious RECOVERED."""
+    emitter = TriggerEmitter(enter_threshold=0.85, exit_threshold=0.50,
+                              sustain_seconds=2.0, cooldown_seconds=10.0)
+    assert emitter.update(0.3, now=0.0) is None
+    assert emitter.update(0.2, now=1.0) is None
