@@ -11,6 +11,12 @@ Quy tắc (đúng runbook mục 07):
   - Chỉ "mở khoá" để fire lần tiếp theo khi score rơi xuống <= exit_threshold
     (hysteresis 2 ngưỡng, không phải 1 ngưỡng đơn — tránh dao động quanh 0.85).
   - cooldown_seconds là lớp bảo vệ bổ sung phòng khi logic sustain có bug.
+
+FacePresenceTracker
+-------------------
+Phát hiện mất mặt kéo dài (camera che, driver ra khỏi khung hình) để phát
+UNKNOWN — tách riêng khỏi TriggerEmitter vì đây là tín hiệu về SỰ HIỆN DIỆN
+của khuôn mặt, không phải về giá trị score.
 """
 from typing import Optional
 
@@ -49,4 +55,30 @@ class TriggerEmitter:
                 if self._critical_active:
                     self._critical_active = False
                     return "RECOVERED"
+        return None
+
+
+class FacePresenceTracker:
+    """Phát hiện mất mặt kéo dài (camera che, driver ra khỏi khung hình) để phát
+    UNKNOWN — tách riêng khỏi TriggerEmitter vì đây là tín hiệu về SỰ HIỆN DIỆN
+    của khuôn mặt, không phải về giá trị score."""
+
+    def __init__(self, sustain_seconds: float = 2.0):
+        self.sustain_seconds = sustain_seconds
+        self._absent_since: Optional[float] = None
+        self._unknown_active = False
+
+    def update(self, has_face: bool, now: float) -> Optional[str]:
+        if not has_face:
+            if self._absent_since is None:
+                self._absent_since = now
+            sustained = (now - self._absent_since) >= self.sustain_seconds
+            if sustained and not self._unknown_active:
+                self._unknown_active = True
+                return "UNKNOWN"
+        else:
+            self._absent_since = None
+            if self._unknown_active:
+                self._unknown_active = False
+                return "PRESENT"
         return None

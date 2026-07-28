@@ -4,7 +4,7 @@ Không cần Android/CarSky/video thật — đây là bằng chứng "test evid
 đầu tiên có thể bỏ vào evidence/ ngay hôm nay.
 """
 from score_calculator import DrowsinessScoreCalculator, FrameFeatures
-from trigger_emitter import TriggerEmitter
+from trigger_emitter import TriggerEmitter, FacePresenceTracker
 
 
 # ---------- DrowsinessScoreCalculator ----------
@@ -130,3 +130,33 @@ def test_recovered_does_not_fire_without_a_prior_critical():
                               sustain_seconds=2.0, cooldown_seconds=10.0)
     assert emitter.update(0.3, now=0.0) is None
     assert emitter.update(0.2, now=1.0) is None
+
+
+# ---------- FacePresenceTracker ----------
+
+def test_face_presence_no_signal_while_face_is_visible():
+    tracker = FacePresenceTracker(sustain_seconds=2.0)
+    assert tracker.update(has_face=True, now=0.0) is None
+    assert tracker.update(has_face=True, now=1.0) is None
+
+
+def test_face_presence_unknown_fires_once_after_sustained_loss():
+    tracker = FacePresenceTracker(sustain_seconds=2.0)
+    assert tracker.update(has_face=False, now=0.0) is None
+    assert tracker.update(has_face=False, now=1.0) is None
+    assert tracker.update(has_face=False, now=2.1) == "UNKNOWN"
+    assert tracker.update(has_face=False, now=3.0) is None, "must not repeat UNKNOWN every call"
+
+
+def test_face_presence_present_fires_once_on_face_returning():
+    tracker = FacePresenceTracker(sustain_seconds=2.0)
+    tracker.update(has_face=False, now=0.0)
+    assert tracker.update(has_face=False, now=2.1) == "UNKNOWN"
+    assert tracker.update(has_face=True, now=3.0) == "PRESENT"
+    assert tracker.update(has_face=True, now=3.1) is None, "must not repeat PRESENT every call"
+
+
+def test_face_presence_brief_loss_under_sustain_window_emits_nothing():
+    tracker = FacePresenceTracker(sustain_seconds=2.0)
+    tracker.update(has_face=False, now=0.0)
+    assert tracker.update(has_face=True, now=1.0) is None, "face came back before sustain elapsed"
