@@ -1,51 +1,47 @@
 """
 eye_state
 ---------
-Real eye-aspect-ratio (EAR) computation from MediaPipe FaceMesh landmarks —
-classic Soukupová & Čech (2016) formula. Pure geometry, no MediaPipe/OpenCV
-import here, so it's testable with plain synthetic coordinates.
+Eye-closure signal from MediaPipe Face Landmarker's face_blendshapes
+(eyeBlinkLeft/eyeBlinkRight, continuous [0,1]) instead of a hand-computed
+eye-aspect-ratio from raw landmark geometry. Pure data in, no
+MediaPipe/OpenCV import here -- testable with plain dicts.
 
-MediaPipe FaceMesh landmark indices used per eye (6-point EAR layout):
-  Left eye  (viewer's left  / subject's right): [362, 385, 387, 263, 373, 380]
-  Right eye (viewer's right / subject's left):  [33,  160, 158, 133, 153, 144]
-Order for each list: [outer_corner, top_1, top_2, inner_corner, bottom_2, bottom_1]
+BLINK_CLOSE_THRESHOLD/BLINK_REOPEN_THRESHOLD form a two-threshold
+hysteresis at the RAW SIGNAL layer (not just the composite-score layer,
+where the only hysteresis previously lived -- trigger_emitter.py's
+TriggerEmitter). This targets a specific, evidenced failure: a real drowsy
+video's score climbed to 0.800 then dropped sharply the instant one frame's
+raw signal crossed a single instantaneous threshold, right before the 0.85
+CRITICAL threshold would have been reached (see
+PITCH_ESTIMATION_FINDINGS.md). Values between the two thresholds are
+deliberately "sticky" in whichever state was last entered.
 """
-import math
-from typing import List, Tuple
+from typing import Dict
 
-LEFT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
-RIGHT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
-
-EAR_CLOSED_THRESHOLD = 0.18
-EAR_OPEN_THRESHOLD = 0.28
-
-
-def _dist(a: Tuple[float, float], b: Tuple[float, float]) -> float:
-    return math.hypot(a[0] - b[0], a[1] - b[1])
-
-
-def compute_ear(points: List[Tuple[float, float]]) -> float:
-    """points: [outer_corner, top_1, top_2, inner_corner, bottom_2, bottom_1]."""
-    if len(points) != 6:
-        raise ValueError(f"compute_ear cần đúng 6 điểm, nhận được {len(points)}")
-    outer, top1, top2, inner, bottom2, bottom1 = points
-    vertical = _dist(top1, bottom1) + _dist(top2, bottom2)
-    horizontal = 2.0 * _dist(outer, inner)
-    if horizontal == 0:
-        return 0.0
-    return vertical / horizontal
+# Blendshape scores range [0, 1], where 1 = eyes fully closed.
+# BLINK_CLOSE_THRESHOLD = 0.55: enter "closed" when eyes >55% shut (above midpoint);
+# BLINK_REOPEN_THRESHOLD = 0.35: exit "closed" only when eyes <35% shut (below midpoint).
+# The 0.2 gap (0.55 - 0.35) provides hysteresis to prevent state flicker from noise
+# in the blendshape signal (e.g., a single noisy frame dipping between the thresholds).
+# This starting point is centered slightly above the blendshape [0,1] midpoint (0.5)
+# and will be empirically validated against real blink video data in Task 7.
+BLINK_CLOSE_THRESHOLD = 0.55
+BLINK_REOPEN_THRESHOLD = 0.35
 
 
-def eye_open_probability(ear: float) -> float:
-    """Ánh xạ tuyến tính EAR -> [0,1], kẹp ở 2 đầu ngưỡng đã calibrate."""
-    span = EAR_OPEN_THRESHOLD - EAR_CLOSED_THRESHOLD
-    normalized = (ear - EAR_CLOSED_THRESHOLD) / span
-    return max(0.0, min(1.0, normalized))
+def blink_score(blendshapes: Dict[str, float]) -> float:
+    left = blendshapes.get("eyeBlinkLeft", 0.0)
+    right = blendshapes.get("eyeBlinkRight", 0.0)
+    return (left + right) / 2.0
 
 
-def average_ear(landmarks: List[Tuple[float, float]]) -> float:
-    """landmarks: full 468-point MediaPipe FaceMesh list (x, y) in normalized
-    image coordinates; averages both eyes' EAR."""
-    left = [landmarks[i] for i in LEFT_EYE_INDICES]
-    right = [landmarks[i] for i in RIGHT_EYE_INDICES]
-    return (compute_ear(left) + compute_ear(right)) / 2.0
+class BlinkStateTracker:
+    def __init__(self):
+        self._closed = False
+
+    def update(self, score: float, now: float) -> bool:
+        if not self._closed and score >= BLINK_CLOSE_THRESHOLD:
+            self._closed = True
+        elif self._closed and score <= BLINK_REOPEN_THRESHOLD:
+            self._closed = False
+        return self._closed

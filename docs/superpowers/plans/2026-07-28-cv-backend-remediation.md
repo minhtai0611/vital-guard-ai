@@ -97,7 +97,7 @@ replaced, not patched.
   pitch axis; its *finding* gets committed as code + regression tests, the
   script itself does not need to survive.
 - Create: `dms-ai-engine/measure_latency.py` — committed, reusable latency
-  measurement script for Task 8's gate.
+  measurement script for Task 7's gate.
 
 ---
 
@@ -348,6 +348,26 @@ real video with a known, unambiguous head motion, mirroring Task 8's own
 "sweep and correlate against ground truth" methodology, adapted to the tools
 actually available here.
 
+**A second, easy-to-miss assumption baked into the Euler-extraction formula
+itself (not just "which axis is pitch"):** the three `atan2` expressions
+below assume `facial_transformation_matrixes`' rotation submatrix decomposes
+under one *specific* composition order (the classic
+`R = Rz(z) · Ry(y) · Rx(x)` Tait-Bryan convention this formula is built on).
+This is a second, independent assumption from "which axis is pitch" — and
+critically, **pure single-axis rotation tests (Step 5's
+`test_pure_x_rotation_recovers_known_angle`/`test_pure_y_rotation_...`)
+cannot detect a wrong composition order**, because with only one non-zero
+Euler angle there's no coupling between axes for a wrong decomposition order
+to leak through — any consistent decomposition recovers a pure single-axis
+rotation correctly regardless of composition-order convention. A real
+driver's head moves on multiple axes at once (nod + slight tilt + turn
+together), which is exactly the condition that would expose a wrong
+composition order as cross-axis leakage. Step 3 below adds an explicit check
+against *combined*, natural head motion in real video (not just the
+isolated clean-nod segment), and Step 5 adds a synthetic combined-rotation
+unit test — together these catch what the single-axis tests structurally
+cannot.
+
 - [ ] **Step 1:** Write the throwaway probe script
   `dms-ai-engine/out/probe_pitch_axis.py` (do not commit this file — it's a
   one-time investigation tool, its *finding* becomes the committed code in
@@ -410,6 +430,19 @@ actually available here.
   `head_pitch_deg` docstring convention. Record which axis (x/y/z from the
   probe) was chosen and why, in a comment in the real `head_pose.py` (Step 4)
   — do not leave this decision undocumented.
+
+  **Also run the same probe against `normal.mp4` or `distracted.mp4`** (not
+  just the isolated drowsy droop) and inspect a segment where the head is
+  visibly doing more than one thing at once (a slight turn while also
+  tilting, not a clean isolated nod) — per this task's preamble, an isolated
+  clean-nod segment cannot expose a wrong Euler composition-order
+  convention, only combined/coupled motion can. Confirm the chosen pitch
+  component still tracks visually-apparent nodding without visible
+  contamination from the simultaneous other motion in that segment. If the
+  chosen axis looks contaminated (jumps or trends that don't match the
+  visible nod alone), the composition-order assumption in Step 4's formula
+  is suspect — this is a real finding to document, not something to paper
+  over by cherry-picking a cleaner segment.
 - [ ] **Step 4:** Rewrite `dms-ai-engine/services/head_pose.py` using the
   axis chosen in Step 3 (below uses `x` as the placeholder for whichever
   component Step 3 actually identifies — substitute the real finding, do not
@@ -520,10 +553,43 @@ actually available here.
       for angle in (-30.0, -15.0, 15.0, 30.0):
           pitch = extract_pitch_deg(_rotation_matrix_y(angle))
           assert abs(pitch) < 2.5, f"non-pitch axis rotation of {angle} deg leaked into pitch: got {pitch}"
+
+
+  def test_combined_rotation_does_not_corrupt_pitch_extraction():
+      """Single-axis tests above cannot detect a wrong Euler composition-order
+      convention -- with only one non-zero angle, any consistent decomposition
+      recovers it correctly regardless of composition order. This test
+      combines two axes at once (matching how a real head actually moves --
+      nod + turn together, not in isolation) under the SAME composition order
+      this module's own rotation_matrix_to_euler_deg assumes (R = Rz*Ry*Rx;
+      with the Z angle held at 0, that reduces to R = Ry @ Rx -- Ry applied
+      to the result of Rx, i.e. Ry's matrix LEFT-multiplies Rx's matrix), so
+      it validates internal self-consistency of our chosen convention. With
+      this exact order, both angles recover exactly (verified numerically:
+      x=20.0, y=15.0, z=0.0 to 1e-10 precision -- these are noiseless
+      analytic rotations, not real sensor data, so an exact match is the
+      correct bar, not a loose tolerance). It does NOT prove
+      facial_transformation_matrixes uses the same convention -- that can
+      only be checked empirically against real video (Task 3 Step 3's
+      combined-motion probe), which is a separate, real-data-dependent check
+      this synthetic test cannot replace."""
+      pitch_angle, other_angle = 20.0, 15.0
+      combined = _rotation_matrix_y(other_angle) @ _rotation_matrix_x(pitch_angle)
+      x, y, z = rotation_matrix_to_euler_deg(combined)
+      assert abs(x - pitch_angle) < 0.01, f"expected pitch axis ~{pitch_angle}, got {x}"
+      assert abs(y - other_angle) < 0.01, f"expected other axis ~{other_angle}, got {y}"
+      assert abs(z) < 0.01, f"expected no leakage into the third (unrotated) axis, got {z}"
   ```
   (If Step 3's finding is `y` or `z` instead of `x`, swap which builder
   function plays the "pitch axis" vs "other axis" role throughout this file
-  — do not leave a mismatch between the finding and the tests.)
+  — do not leave a mismatch between the finding and the tests. The `@`
+  matrix-multiplication order in `test_combined_rotation_...` must stay
+  LEFT-multiplied by whichever matrix corresponds to the axis that composes
+  *outermost* under `R = Rz*Ry*Rx` (Z outermost, then Y, then X innermost) —
+  get this backwards and the test silently validates a different convention
+  than `rotation_matrix_to_euler_deg` actually implements, without
+  necessarily failing (a loose tolerance would hide it; the exact-match
+  assertions above are chosen specifically so a wrong order does fail).)
 - [ ] **Step 6:** Run: `pytest dms-ai-engine/tests/test_head_pose.py -v`
   Expected: all tests PASS. These test pure math (rotation matrices you
   construct by hand), so they run fine on Windows without needing the real
@@ -666,11 +732,13 @@ actually available here.
   test-writing convenience. Blendshape scores and EAR are different scales
   (blendshape is a learned [0,1] confidence, not a geometric ratio) — do not
   assume the old `EAR_CLOSED_THRESHOLD=0.18`-style numeric intuition
-  transfers. Defer final tuning to Task 8's acceptance-gate run against real
-  video (this step just needs *a* reasoned starting point — e.g. 0.5/0.3 as
-  a symmetric-ish gap around blendshape midpoint — document the reasoning
-  inline as a comment, and expect Task 8 to possibly revise it with
-  real-data evidence).
+  transfers. This step just needs *a* reasoned starting point — e.g. 0.5/0.3
+  as a symmetric-ish gap around blendshape midpoint — document the reasoning
+  inline as a comment. **This is genuinely revisited, not just hoped to be:
+  Task 7 Step 3.5 explicitly inspects real blink-score CSV data against
+  these two numbers and requires a fix-and-rerun if they look wrong** —
+  don't treat "defer to later" as equivalent to "will definitely get
+  checked"; the checking step is named explicitly below.
 - [ ] **Step 5:** Run: `pytest dms-ai-engine/tests/test_eye_state.py -v`
   Expected: all 6 tests PASS.
 - [ ] **Step 6:** Commit:
@@ -695,6 +763,17 @@ actually available here.
   (give it a sensible container-path default so existing callers/tests that
   don't care about the model path don't all need updating, but allow
   override for tests that supply a fake).
+
+**Verified before writing this task (not assumed from memory):**
+`FacePresenceTracker.update()` (`services/trigger_emitter.py`, unchanged by
+this plan) is edge-triggered via its own `_unknown_active` guard flag — it
+returns `"UNKNOWN"` exactly once when sustained absence is first detected
+(`sustained and not self._unknown_active`), then `None` on every subsequent
+call while `has_face` stays `False`, only returning `"PRESENT"` once when a
+face reappears. So `if face_signal == "UNKNOWN":` below fires once per
+lost-face episode, not once per frame during the whole absence — confirmed
+by reading the actual current source, not carried over from an earlier
+session's memory of a different plan's Task 4.
 
 - [ ] **Step 1:** Rewrite `run_real_video()` in `main.py`:
   ```python
@@ -869,16 +948,29 @@ actually available here.
   (frame-read → inference → score-computed) latency in milliseconds, run
   across one or more videos.
 
-- [ ] **Step 1:** Create `dms-ai-engine/measure_latency.py`:
+- [ ] **Step 1:** Create `dms-ai-engine/measure_latency.py`. This mirrors
+  `run_real_video()`'s **entire** per-frame body, not a subset — an earlier
+  draft of this script only timed through `calc.add_frame(...)`, omitting
+  `face_tracker.update()`, `emitter.update()`, and — critically — the
+  `build_trigger_payload()`/`store.update_latest()` path that only runs on
+  a `CRITICAL`/`RECOVERED`/`UNKNOWN` frame. That's exactly the frame where
+  latency matters most (the system reacting to a real trigger), and it's
+  also the one with extra cost (payload construction, a lock-guarded store
+  write) that a subset measurement would silently miss, making the reported
+  p95 an optimistic lower bound rather than the real worst case. Include a
+  real `LatestTriggerStore` (no HTTP server needed for this measurement —
+  just the store object, since the lock/write is what's being timed) so the
+  trigger-path cost is genuinely exercised, not skipped:
   ```python
   """
   Measures end-to-end per-frame latency (frame read -> Face Landmarker
-  inference -> score computed) -- NOT just the detect_for_video() call in
-  isolation, since the whole pipeline is what actually affects the driver.
-  Run inside the real Container-Node-equivalent Docker container, not just
-  the dev machine (see design doc Decision 4 -- CPU delegate doesn't cover
-  CPU-architecture mismatches, and dev-machine timing isn't representative
-  of the real deployment target regardless).
+  inference -> eye/pose extraction -> score -> emitter/face-tracker update ->
+  trigger-store write on a firing frame) -- the FULL per-frame body
+  run_real_video() executes, not a subset. Run inside the real
+  Container-Node-equivalent Docker container, not just the dev machine (see
+  design doc Decision 4 -- CPU delegate doesn't cover CPU-architecture
+  mismatches, and dev-machine timing isn't representative of the real
+  deployment target regardless).
 
   Usage: python measure_latency.py video1.mp4 video2.mp4 ...
   """
@@ -892,6 +984,9 @@ actually available here.
   from services.head_pose import extract_pitch_deg
   from services.eye_state import blink_score, BlinkStateTracker
   from services.score_calculator import DrowsinessScoreCalculator, FrameFeatures
+  from services.trigger_emitter import TriggerEmitter, FacePresenceTracker
+  from services.trigger_server import LatestTriggerStore
+  from main import build_trigger_payload, _state_for_score
 
 
   def measure(video_path: str, model_path: str) -> list:
@@ -899,6 +994,11 @@ actually available here.
       timestamp_guard = MonotonicTimestamp()
       blink_tracker = BlinkStateTracker()
       calc = DrowsinessScoreCalculator(window_seconds=2.0, sample_hz=10.0)
+      emitter = TriggerEmitter(enter_threshold=0.85, exit_threshold=0.50,
+                                sustain_seconds=2.0, cooldown_seconds=10.0)
+      face_tracker = FacePresenceTracker(sustain_seconds=2.0)
+      store = LatestTriggerStore()
+      event_counter = 0
       cap = cv2.VideoCapture(video_path)
       latencies_ms = []
       t = 0.0
@@ -914,12 +1014,34 @@ actually available here.
           mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
           raw_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
           result = landmarker.detect_for_video(mp_image, timestamp_guard.next(raw_ms))
-          if result.face_blendshapes:
+          has_face = bool(result.face_blendshapes)
+
+          face_signal = face_tracker.update(has_face=has_face, now=t)
+          if face_signal == "UNKNOWN":
+              event_counter += 1
+              store.update_latest(build_trigger_payload(
+                  state="UNKNOWN", score=0.0, confidence=0.0,
+                  perclos=0.0, eye_open_probability=0.0, head_euler_angle_x=0.0,
+                  reason="lost_face", source="latency-check", event_counter=event_counter,
+              ))
+
+          if has_face:
               blendshapes = {c.category_name: c.score for c in result.face_blendshapes[0]}
               score_blink = blink_score(blendshapes)
               eye_closed = blink_tracker.update(score_blink, now=t)
               pitch_deg = extract_pitch_deg(result.facial_transformation_matrixes[0])
-              calc.add_frame(FrameFeatures(timestamp=t, eye_closed=eye_closed, head_pitch_deg=pitch_deg))
+              score = calc.add_frame(FrameFeatures(timestamp=t, eye_closed=eye_closed, head_pitch_deg=pitch_deg))
+              signal = emitter.update(score, now=t)
+              state = _state_for_score(score)
+              if signal in ("CRITICAL", "RECOVERED"):
+                  event_counter += 1
+                  store.update_latest(build_trigger_payload(
+                      state=state, score=score, confidence=1.0,
+                      perclos=calc.compute_score(), eye_open_probability=(1.0 - score_blink),
+                      head_euler_angle_x=pitch_deg,
+                      reason=("sustained_high_score" if signal == "CRITICAL" else "recovered"),
+                      source="latency-check", event_counter=event_counter,
+                  ))
           latencies_ms.append((time.perf_counter() - start) * 1000.0)
           t += frame_dt
 
@@ -944,8 +1066,8 @@ actually available here.
             f"p99={percentile(all_latencies, 99):.1f}ms")
   ```
 - [ ] **Step 2:** No automated test for this script — it's a measurement
-  tool, and Task 8's acceptance-gate run is its real exercise. Manually
-  confirm it runs without crashing against one video before Task 8:
+  tool, and Task 7's acceptance-gate run is its real exercise. Manually
+  confirm it runs without crashing against one video before Task 7:
   ```bash
   cd dms-ai-engine
   docker build -t vital-guard-dms:latency-check .
@@ -1003,17 +1125,58 @@ here.
 - [ ] **Step 3: Gate 1 — physical plausibility.** Programmatically check the
   drowsy video's pitch trajectory for jumps (write a short one-off check, not
   a permanent test file, since this is a one-time acceptance measurement
-  against a specific real clip, not a regression guard on code):
+  against a specific real clip, not a regression guard on code).
+  **Only compare truly-adjacent rows (consecutive line numbers), not "the
+  previous row that happened to have a pitch value"** — if the face is lost
+  for a few frames (plausible exactly during a drowsy/microsleep moment, the
+  head drooping out of frame) and reappears at a genuinely different angle,
+  comparing across that gap can produce a large, legitimate diff that isn't
+  a flip artifact at all; the check below tracks the previous row's own line
+  number and skips the comparison whenever a gap is detected, rather than
+  silently comparing across it:
   ```bash
-  awk -F',' 'NR>2 && $4!="" && prev!="" {diff=$4-prev; if (diff<0) diff=-diff; if (diff>90) print "JUMP at row "NR": "prev" -> "$4} NR>1 && $4!="" {prev=$4}' \
-    out/evidence_drowsy_post_remediation.csv
+  awk -F',' '
+    NR>1 && $4!="" {
+      if (prev_val != "" && NR == prev_row + 1) {
+        diff = $4 - prev_val
+        if (diff < 0) diff = -diff
+        if (diff > 90) print "JUMP at row " NR ": " prev_val " -> " $4
+      } else if (prev_val != "" && NR != prev_row + 1) {
+        print "SKIPPED (gap after face loss, rows " prev_row " -> " NR "): " prev_val " -> " $4 " -- not compared"
+      }
+      prev_val = $4
+      prev_row = NR
+    }
+  ' out/evidence_drowsy_post_remediation.csv
   ```
-  Expected: **no output** (zero jumps >90°). If any jump prints, Gate 1
-  fails — this is a real regression to investigate in Task 3's extraction
-  logic, not something to relax the threshold to hide.
+  Expected: no `JUMP` lines (any `SKIPPED` lines are informational, not
+  failures — they mark exactly the gap-after-face-loss case this check is
+  designed to not misjudge). If any `JUMP` line prints, Gate 1 fails — this
+  is a real regression to investigate in Task 3's extraction logic, not
+  something to relax the threshold to hide.
   Then visually cross-check 2-3 frames (same procedure as Task 3 Step 3):
   confirm the numeric pitch direction matches what's visibly seen in the
   source video at those timestamps.
+- [ ] **Step 3.5: Sanity-check the blink-hysteresis thresholds against real
+  data** (closes the loop Task 4 Step 4 opened — this is the step that
+  actually inspects `BLINK_CLOSE_THRESHOLD`/`BLINK_REOPEN_THRESHOLD` against
+  real footage, not just a hope that it happens somewhere). Extract the
+  `blink_score` column from `evidence_drowsy_post_remediation.csv` at
+  timestamps visibly showing closed eyes (from the original manual review
+  around the drowsy video's t≈0.6-1.2s droop segment) and at timestamps
+  showing clearly open eyes (e.g. the first ~0.3s):
+  ```bash
+  awk -F',' 'NR>1 && $1+0>=0.6 && $1+0<=1.2 {print $3}' out/evidence_drowsy_post_remediation.csv
+  awk -F',' 'NR>1 && $1+0<0.3 {print $3}' out/evidence_drowsy_post_remediation.csv
+  ```
+  If the closed-eye segment's values aren't reliably above
+  `BLINK_CLOSE_THRESHOLD` (0.6) or the open-eye segment's values aren't
+  reliably below `BLINK_REOPEN_THRESHOLD` (0.4), adjust the two constants in
+  `eye_state.py` with the reasoning updated in its inline comment, re-run
+  Task 5's test suite (the hysteresis logic tests use the constants
+  symbolically, so they still pass after a threshold change — only the
+  absolute numbers move), and re-run Step 2's video pass before continuing
+  to Gate 2.
 - [ ] **Step 4: Gate 2 — score outcome.** Inspect
   `evidence_drowsy_post_remediation.csv`'s max score and
   `evidence_normal_post_remediation.csv`/`evidence_distracted_post_remediation.csv`'s
@@ -1053,15 +1216,31 @@ here.
     after downscaling** — do not skip this re-check.
 - [ ] **Step 6:** Record the full outcome (Gate 1 result, which Gate 2 path
   was satisfied, latency numbers, any downscale decision and its Gate 1
-  re-check) in a short new findings note —
-  `dms-ai-engine/CV_REMEDIATION_RESULTS.md` — mirroring the level of concrete
-  detail `PITCH_ESTIMATION_FINDINGS.md` had (exact numbers, not vague
-  summaries), since that's the standard this project has held itself to
-  throughout.
+  re-check, and the Step 3.5 blink-threshold sanity check's outcome) in a
+  short new findings note — `dms-ai-engine/CV_REMEDIATION_RESULTS.md` —
+  mirroring the level of concrete detail `PITCH_ESTIMATION_FINDINGS.md` had
+  (exact numbers, not vague summaries), since that's the standard this
+  project has held itself to throughout.
+- [ ] **Step 6.5:** Update `CLAUDE.md` — it currently still names
+  "MobileNetV3-Small INT8-quantized" as the eye-state backbone (the
+  documented "Known Deviations from Proposal" note about switching to
+  MediaPipe was itself part of a *different* plan's Task 17, which was
+  scoped to a teammate and, per that plan's own ledger, was never actually
+  executed — so CLAUDE.md is stale on this point regardless of this plan's
+  changes, and this migration is now a *second* deviation on top of an
+  undocumented first one). Update CLAUDE.md's "Known Deviations from
+  Proposal" section (add it if the section doesn't exist yet) to state
+  plainly that the eye-state/head-pose backbone is MediaPipe Face Landmarker
+  (blendshapes + facial transformation matrices), not MobileNetV3 and not
+  plain FaceMesh + hand-rolled EAR/solvePnP either — with a one-line
+  judge-facing reason consistent with the project's existing stance (a
+  pretrained, well-validated model used as-is, not a custom-trained
+  classifier, so no claim of "scientific validation" for the specific
+  thresholds is being made).
 - [ ] **Step 7:** Commit:
   ```bash
-  git add dms-ai-engine/CV_REMEDIATION_RESULTS.md
-  git commit -m "Record CV backend remediation acceptance-gate results"
+  git add dms-ai-engine/CV_REMEDIATION_RESULTS.md CLAUDE.md
+  git commit -m "Record CV backend remediation acceptance-gate results, update CLAUDE.md's stale backbone description"
   ```
 
 ---
@@ -1098,3 +1277,42 @@ here.
   concrete, runnable procedure (not a vague "figure it out") and a clear
   instruction to substitute the real finding everywhere a placeholder axis
   choice appears, rather than leaving it inconsistent.
+- **Revision (post-review) fixes:**
+  1. Task 3's Euler-extraction formula silently assumed a specific
+     composition-order convention (`Rz*Ry*Rx`) in addition to "which axis is
+     pitch" — a second, independent assumption single-axis tests structurally
+     cannot catch (no cross-axis coupling with only one non-zero angle). Added
+     a combined-motion empirical check to Step 3 and a synthetic
+     combined-rotation self-consistency test to Step 5.
+  2. Task 4 Step 4 referenced a nonexistent "Task 8" (this plan only has 7
+     tasks) and implied the blink thresholds would get revisited without any
+     step actually doing so. Fixed the reference and added Task 7 Step 3.5,
+     which explicitly inspects real blink-score CSV data against the two
+     thresholds and requires a fix-and-rerun if they don't hold up.
+  3. `measure_latency.py`'s first draft only timed through
+     `calc.add_frame(...)`, omitting `face_tracker.update()`,
+     `emitter.update()`, and the `build_trigger_payload`/
+     `store.update_latest` path that only runs on a firing frame — exactly
+     the frame where latency matters most and where the omitted cost (lock-
+     guarded store write) actually lives. Rewritten to mirror
+     `run_real_video()`'s full per-frame body.
+  4. Task 7's Gate 1 jump-check compared "the previous row with a pitch
+     value," which would misjudge a legitimate large angle change across a
+     face-loss gap (plausible exactly during a drowsy/microsleep moment) as
+     a flip artifact. Rewritten to only compare truly-consecutive CSV rows,
+     explicitly skipping (and logging, not silently ignoring) any gap.
+  5. CLAUDE.md still names MobileNetV3 as the backbone — the "Known
+     Deviations" update was scoped to a different plan's Task 17, which was
+     assigned to a teammate and, per that plan's own ledger, was never
+     executed. Added Task 7 Step 6.5 to fix this, since this migration is a
+     second undocumented deviation stacking on an already-undocumented first
+     one.
+  6. A prior review round flagged a possible idempotency gap in Task 5's
+     `if face_signal == "UNKNOWN":` branch (could it fire every frame during
+     a prolonged face-loss period, not just once?) but the fix for it never
+     landed in the plan text. Resolved by reading the actual current
+     `FacePresenceTracker.update()` source (not relying on memory of an
+     earlier session/plan): it already guards with an `_unknown_active` flag
+     and is edge-triggered by construction, so the existing code was correct
+     — added an explicit "Verified before writing this task" note to Task 5
+     citing the exact mechanism, so this isn't an unstated assumption anymore.

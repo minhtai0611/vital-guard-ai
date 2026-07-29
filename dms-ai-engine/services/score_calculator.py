@@ -15,7 +15,9 @@ from collections import deque
 @dataclass
 class FrameFeatures:
     timestamp: float        # giây, mốc thời gian của frame trong video
-    eye_closed: bool        # output của eye-state classifier (MobileNetV3-Small)
+    eye_closed: bool        # output của BlinkStateTracker (blendshape blink score +
+                             # hysteresis, services/eye_state.py) — không phải
+                             # MobileNetV3-Small
     head_pitch_deg: float   # góc pitch đầu, dương = đầu gục xuống
 
 

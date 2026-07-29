@@ -1,37 +1,40 @@
-from services.eye_state import compute_ear
-
-# 6-point layout per eye, MediaPipe FaceMesh index order: [outer_corner, top_1,
-# top_2, inner_corner, bottom_2, bottom_1] — matches the classic
-# Soukupová & Čech EAR formula: (||top1-bottom1|| + ||top2-bottom2||) / (2*||outer-inner||)
+from services.eye_state import blink_score, BlinkStateTracker, BLINK_CLOSE_THRESHOLD, BLINK_REOPEN_THRESHOLD
 
 
-def test_open_eye_has_high_ear():
-    # tall, open eye shape: vertical gap ~0.08, horizontal gap ~0.30
-    landmarks = [
-        (0.0, 0.15),   # outer corner
-        (0.10, 0.05),  # top_1
-        (0.20, 0.05),  # top_2
-        (0.30, 0.15),  # inner corner
-        (0.20, 0.25),  # bottom_2
-        (0.10, 0.25),  # bottom_1
-    ]
-    assert compute_ear(landmarks) > 0.25
+def test_blink_score_averages_both_eyes():
+    blendshapes = {"eyeBlinkLeft": 0.8, "eyeBlinkRight": 0.6, "jawOpen": 0.1}
+    assert blink_score(blendshapes) == 0.7
 
 
-def test_closed_eye_has_low_ear():
-    # flat, closed eye shape: near-zero vertical gap, same horizontal gap
-    landmarks = [
-        (0.0, 0.15),
-        (0.10, 0.14),
-        (0.20, 0.14),
-        (0.30, 0.15),
-        (0.20, 0.16),
-        (0.10, 0.16),
-    ]
-    assert compute_ear(landmarks) < 0.10
+def test_blink_score_missing_category_defaults_to_zero():
+    """If Face Landmarker doesn't report a category for a frame (e.g. face
+    partially out of view), treat it as eyes-open rather than crashing."""
+    assert blink_score({"jawOpen": 0.1}) == 0.0
 
 
-def test_ear_requires_exactly_six_points():
-    import pytest
-    with pytest.raises(ValueError):
-        compute_ear([(0.0, 0.0), (1.0, 1.0)])
+def test_blink_state_tracker_stays_open_below_close_threshold():
+    tracker = BlinkStateTracker()
+    assert tracker.update(BLINK_CLOSE_THRESHOLD - 0.05, now=0.0) is False
+
+
+def test_blink_state_tracker_closes_above_close_threshold():
+    tracker = BlinkStateTracker()
+    assert tracker.update(BLINK_CLOSE_THRESHOLD + 0.05, now=0.0) is True
+
+
+def test_blink_state_tracker_ignores_a_single_dip_between_the_two_thresholds():
+    """This is the exact failure mode from the real drowsy-video finding:
+    one noisy frame dipping between the close and reopen thresholds must
+    NOT flip the state back to open -- only dropping below the LOWER
+    reopen threshold should."""
+    tracker = BlinkStateTracker()
+    assert tracker.update(BLINK_CLOSE_THRESHOLD + 0.10, now=0.0) is True
+    midpoint = (BLINK_CLOSE_THRESHOLD + BLINK_REOPEN_THRESHOLD) / 2
+    assert tracker.update(midpoint, now=0.03) is True, "a dip that doesn't cross the reopen threshold must stay closed"
+    assert tracker.update(BLINK_CLOSE_THRESHOLD + 0.10, now=0.07) is True
+
+
+def test_blink_state_tracker_reopens_only_below_reopen_threshold():
+    tracker = BlinkStateTracker()
+    tracker.update(BLINK_CLOSE_THRESHOLD + 0.10, now=0.0)
+    assert tracker.update(BLINK_REOPEN_THRESHOLD - 0.05, now=0.03) is False

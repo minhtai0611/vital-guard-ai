@@ -21,9 +21,12 @@ vital-guard-ai/
 ## Modules
 
 ### `dms-ai-engine/`
-Python + OpenCV + MediaPipe Face Mesh drowsiness detector. Computes an EAR-based drowsiness
-score over a sliding window and, once it crosses the threshold, sends a `TRIGGER_ALERT`
-broadcast to the AAOS device (via CarSky's shell/ADB bridge in the demo environment).
+Python + OpenCV + MediaPipe Face Landmarker (Tasks API, VIDEO running mode) drowsiness
+detector. Computes a composite drowsiness score from the landmarker's face blendshapes
+(blink score) and facial transformation matrix (head pitch) over a sliding window, and once
+it crosses the threshold, serves a Trigger payload over a local HTTP/WebSocket network-pin
+endpoint (`GET /latest-trigger`, conforming to `contracts/trigger.schema.json`) that the
+AAOS app connects to/polls directly — not a CarSky shell/ADB broadcast.
 
 Setup:
 ```bash
