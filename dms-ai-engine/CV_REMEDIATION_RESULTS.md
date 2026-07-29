@@ -277,3 +277,55 @@ bakes the model.)
 No further work is required by this plan. Threshold/sustain-window tuning
 beyond what's already validated here remains explicitly out of this plan's
 scope (per the brief's own path-(b) contingency, which did not trigger).
+
+---
+
+## Follow-up items from the final whole-branch review (deferred, not blockers)
+
+The final whole-branch review (after all 7 tasks + one merge-blocker fix wave)
+found no Critical issues and confirmed the merge-blocking Important findings
+were fixed (NaN/inf crash in the timestamp guard, stale docs describing the
+deleted solvePnP/EAR/FaceMesh backend, an unclosed `FaceLandmarker` resource
+leak, and `test_container.sh`'s false-pass-on-startup-crash gap — all
+addressed and re-reviewed clean). Two Important findings and several Minor
+ones were explicitly scoped out of that fix wave as genuine follow-up work,
+not defects blocking this plan's completion:
+
+- **PERCLOS semantic documentation (design Decision 2's explicit ask, never
+  written down anywhere).** Decision 2 requires documenting that PERCLOS's
+  meaning changed slightly (closed/open classification is now debounced via
+  `BlinkStateTracker`'s hysteresis, not raw-instantaneous) — this was never
+  written. Separately, `main.py`'s `build_trigger_payload(..., perclos=...)`
+  call actually passes `calc.compute_score()` (the composite 0.55/0.25/0.20
+  score), not a true PERCLOS ratio, into the payload's `features.perclos`
+  field — pre-existing, not introduced by this plan, but worth fixing
+  alongside the documentation gap since CLAUDE.md's debug-overlay mandate
+  names `perclos` as a value to display.
+- **No automated regression guard on the real end-to-end CV path.** All 54
+  tests use fakes at the Face Landmarker boundary — nothing chains real
+  landmark detection → pitch extraction → blink scoring → composite score →
+  trigger emission against a real video file. The only proof this actually
+  works is this document's one-time manual container run, whose source CSVs
+  live in gitignored `out/`. Suggested follow-up: commit the 3
+  `evidence_*_post_remediation.csv` files as tracked evidence artifacts, and
+  add a `test_container.sh` step (or a marked-slow pytest) that runs one
+  short real clip and asserts drowsy max score ≥0.85 with zero >90° pitch
+  jumps — the awk logic for both checks already exists above, it just isn't
+  wired into anything repeatable by someone other than whoever ran this
+  document's commands.
+- **Minor, lower-priority items** (not reproduced in full here — see the
+  review transcript in git history / session record if needed): dev tool's
+  `source="latency-check"` payload isn't in `trigger.schema.json`'s `source`
+  enum (harmless — never served); a couple of docstrings cite files that no
+  longer exist (`PITCH_ESTIMATION_FINDINGS.md`, the gitignored throwaway
+  probe script) and should point at this document instead; `main.py` has no
+  `--model-path` CLI flag, so it can't run standalone on a Windows dev
+  machine without editing the hardcoded container path; this document
+  doesn't state which `public/*.mp4` tracked file maps to which gitignored
+  `out/*.mp4` file used in the gate run; a leftover IDE scratch file and an
+  uncommitted `evidence_run.csv` diff should be cleaned up; `curl` stays
+  installed in the final runtime image though it's only needed at build time.
+
+None of these affect the acceptance-gate outcome recorded above or the
+correctness of the shipped CV pipeline — they're worth picking up as
+follow-up work, prioritized roughly in the order listed.
