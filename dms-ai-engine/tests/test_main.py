@@ -28,7 +28,19 @@ class _FakeVideoCapture:
         return self._opened
 
     def get(self, prop_id):
-        return self._fps
+        import cv2
+        # run_real_video() now reads two distinct props: CAP_PROP_FPS (once,
+        # for frame_dt) and CAP_PROP_POS_MSEC (every frame, fed through
+        # MonotonicTimestamp -- which does int(raw_ms) and blows up on NaN).
+        # A fake that returned self._fps for every prop_id used to be harmless
+        # because nothing read POS_MSEC; now it would leak a bad/NaN fps value
+        # into the timestamp guard on every frame. Return a real synthetic
+        # position instead so the two are no longer conflated.
+        if prop_id == cv2.CAP_PROP_FPS:
+            return self._fps
+        if prop_id == cv2.CAP_PROP_POS_MSEC:
+            return self._index * 33.33
+        return 0
 
     def read(self):
         if self._index >= len(self._frames):
@@ -41,20 +53,17 @@ class _FakeVideoCapture:
         self._opened = False
 
 
-def _fake_mediapipe_with_no_face_ever():
-    """Builds a fake `mediapipe` solutions.face_mesh.FaceMesh whose .process()
-    always reports no face detected — used to test the sustained-lost-face path
-    without needing a real face in a real video."""
-    no_face_result = types.SimpleNamespace(multi_face_landmarks=None)
+def _fake_landmarker_with_no_face_ever():
+    """Fakes build_video_mode_landmarker's return value: a FaceLandmarker
+    whose detect_for_video() always reports no face -- used to test the
+    sustained-lost-face path without a real face in a real video."""
+    no_face_result = types.SimpleNamespace(face_blendshapes=[], facial_transformation_matrixes=[])
 
-    class _FakeFaceMesh:
-        def __init__(self, **kwargs):
-            pass
-
-        def process(self, rgb):
+    class _FakeLandmarker:
+        def detect_for_video(self, mp_image, timestamp_ms):
             return no_face_result
 
-    return types.SimpleNamespace(face_mesh=types.SimpleNamespace(FaceMesh=_FakeFaceMesh))
+    return _FakeLandmarker()
 
 
 def test_build_trigger_payload_matches_schema():
@@ -99,11 +108,13 @@ def test_run_real_video_raises_clear_error_when_video_cannot_be_opened(tmp_path,
     anything went wrong. That's exactly the kind of silent failure this test
     closes off: run_real_video() must now raise a clear error instead."""
     import cv2
-    import mediapipe
     import main as main_module
 
     monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture([], opened=False))
-    monkeypatch.setattr(mediapipe, "solutions", _fake_mediapipe_with_no_face_ever(), raising=False)
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_no_face_ever(),
+    )
 
     with pytest.raises(RuntimeError, match="[Cc]ould not open"):
         main_module.run_real_video("does-not-matter.mp4", tmp_path / "out.csv", host="127.0.0.1", port=0)
@@ -119,12 +130,14 @@ def test_run_real_video_falls_back_to_default_fps_when_reported_fps_is_invalid(t
     TriggerEmitter's sustain-window timing). This test forces the fallback to
     actually validate the value, not just its truthiness."""
     import cv2
-    import mediapipe
     import main as main_module
 
     frame = np.zeros((64, 64, 3), dtype=np.uint8)
     monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture([frame, frame], fps=bad_fps))
-    monkeypatch.setattr(mediapipe, "solutions", _fake_mediapipe_with_no_face_ever(), raising=False)
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_no_face_ever(),
+    )
 
     out_csv = tmp_path / "out.csv"
     main_module.run_real_video("does-not-matter.mp4", out_csv, host="127.0.0.1", port=0)
@@ -142,14 +155,16 @@ def test_run_real_video_emits_unknown_after_sustained_lost_face(tmp_path, monkey
     30fps fallback covers 1.0s; sustain_seconds is 2.0s, so this alone must NOT
     fire; the test only asserts on what SHOULD happen once enough frames pass."""
     import cv2
-    import mediapipe
     import main as main_module
 
     frame = np.zeros((64, 64, 3), dtype=np.uint8)
     # 90 frames at fps=30 => 3.0s of video, comfortably past the 2.0s sustain window.
     frames = [frame] * 90
     monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture(frames, fps=30.0))
-    monkeypatch.setattr(mediapipe, "solutions", _fake_mediapipe_with_no_face_ever(), raising=False)
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_no_face_ever(),
+    )
 
     served = []
     original_update_latest = main_module.LatestTriggerStore.update_latest
@@ -200,12 +215,14 @@ def test_run_mock_stream_stops_early_when_shutdown_requested(tmp_path):
 
 def test_run_real_video_stops_early_when_shutdown_requested(tmp_path, monkeypatch):
     import cv2
-    import mediapipe
     import main as main_module
 
     frame = np.zeros((64, 64, 3), dtype=np.uint8)
     monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture([frame] * 90, fps=30.0))
-    monkeypatch.setattr(mediapipe, "solutions", _fake_mediapipe_with_no_face_ever(), raising=False)
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_no_face_ever(),
+    )
 
     main_module._shutdown_requested = True
     try:
@@ -217,14 +234,7 @@ def test_run_real_video_stops_early_when_shutdown_requested(tmp_path, monkeypatc
         main_module._shutdown_requested = False
 
 
-def test_average_ear_and_state_agree_for_synthetic_closed_eyes():
-    from services.eye_state import average_ear
-    # Both eyes flat/closed shape, indices padded so LEFT/RIGHT_EYE_INDICES resolve.
-    from services import eye_state
-    landmarks = [(0.0, 0.0)] * 468
-    closed_shape = [(0.0, 0.15), (0.10, 0.14), (0.20, 0.14), (0.30, 0.15), (0.20, 0.16), (0.10, 0.16)]
-    for i, idx in enumerate(eye_state.LEFT_EYE_INDICES):
-        landmarks[idx] = closed_shape[i]
-    for i, idx in enumerate(eye_state.RIGHT_EYE_INDICES):
-        landmarks[idx] = closed_shape[i]
-    assert average_ear(landmarks) < eye_state.EAR_CLOSED_THRESHOLD
+def test_blink_score_and_state_agree_for_a_high_blink_score():
+    from services.eye_state import blink_score
+    blendshapes = {"eyeBlinkLeft": 0.9, "eyeBlinkRight": 0.85}
+    assert blink_score(blendshapes) > 0.6  # matches BLINK_CLOSE_THRESHOLD's intent

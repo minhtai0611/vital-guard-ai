@@ -134,18 +134,20 @@ def run_mock_stream(out_csv: Path, host: str = "0.0.0.0", port: int = 8765) -> N
         server.shutdown()
 
 
-def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None:
+def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
+                    model_path: str = "/app/models/face_landmarker.task") -> None:
     import cv2
     import mediapipe as mp
-    from services.eye_state import average_ear, eye_open_probability, EAR_CLOSED_THRESHOLD
-    from services.head_pose import estimate_pitch_deg  # Task 8
+    from services.face_landmarker_client import build_video_mode_landmarker, MonotonicTimestamp
+    from services.head_pose import extract_pitch_deg
+    from services.eye_state import blink_score, BlinkStateTracker
 
     store = LatestTriggerStore()
     server = start_background_server(store, host=host, port=port)
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        max_num_faces=1, refine_landmarks=False,
-        min_detection_confidence=0.5, min_tracking_confidence=0.5,
-    )
+    landmarker = build_video_mode_landmarker(model_path)
+    timestamp_guard = MonotonicTimestamp()
+    blink_tracker = BlinkStateTracker()
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         server.shutdown()
@@ -171,7 +173,7 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None
     try:
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["ts", "has_face", "ear", "head_pitch", "score", "state", "signal"])
+            writer.writerow(["ts", "has_face", "blink_score", "head_pitch", "score", "state", "signal"])
             while cap.isOpened():
                 if _shutdown_requested:
                     break
@@ -179,8 +181,10 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None
                 if not ret:
                     break
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = face_mesh.process(rgb)
-                has_face = bool(results.multi_face_landmarks)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                raw_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+                result = landmarker.detect_for_video(mp_image, timestamp_guard.next(raw_ms))
+                has_face = bool(result.face_blendshapes)
 
                 face_signal = face_tracker.update(has_face=has_face, now=t)
                 if face_signal == "UNKNOWN":
@@ -192,11 +196,10 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None
                     ))
 
                 if has_face:
-                    h, w = frame.shape[:2]
-                    landmarks = [(lm.x * w, lm.y * h) for lm in results.multi_face_landmarks[0].landmark]
-                    ear = average_ear(landmarks)
-                    pitch_deg = estimate_pitch_deg(landmarks, w, h)
-                    eye_closed = ear < EAR_CLOSED_THRESHOLD
+                    blendshapes = {c.category_name: c.score for c in result.face_blendshapes[0]}
+                    score_blink = blink_score(blendshapes)
+                    eye_closed = blink_tracker.update(score_blink, now=t)
+                    pitch_deg = extract_pitch_deg(result.facial_transformation_matrixes[0])
                     score = calc.add_frame(FrameFeatures(timestamp=t, eye_closed=eye_closed, head_pitch_deg=pitch_deg))
                     signal = emitter.update(score, now=t)
                     state = _state_for_score(score)
@@ -204,12 +207,12 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int) -> None
                         event_counter += 1
                         store.update_latest(build_trigger_payload(
                             state=state, score=score, confidence=1.0,
-                            perclos=calc.compute_score(), eye_open_probability=eye_open_probability(ear),
+                            perclos=calc.compute_score(), eye_open_probability=(1.0 - score_blink),
                             head_euler_angle_x=pitch_deg,
                             reason=("sustained_high_score" if signal == "CRITICAL" else "recovered"),
                             source="container-python", event_counter=event_counter,
                         ))
-                    writer.writerow([f"{t:.2f}", 1, f"{ear:.3f}", f"{pitch_deg:.1f}", f"{score:.3f}", state, signal or ""])
+                    writer.writerow([f"{t:.2f}", 1, f"{score_blink:.3f}", f"{pitch_deg:.1f}", f"{score:.3f}", state, signal or ""])
                 else:
                     writer.writerow([f"{t:.2f}", 0, "", "", "", "", face_signal or ""])
 
