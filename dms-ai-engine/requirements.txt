@@ -15,6 +15,19 @@
 # Windows dev machines. On Linux, 0.10.14 still ships mediapipe.python.solutions
 # and works correctly once the system libs in ../Dockerfile are installed
 # (libgl1, libglib2.0-0, libsm6, libxext6, libxrender1, libxcb1, libgomp1).
+#
+# Tasks API verification (2026-07-29): confirmed mediapipe==0.10.14 exposes
+# the Tasks API surface this plan's remaining tasks need --
+# mediapipe.tasks.python.vision.FaceLandmarker /
+# vision.FaceLandmarkerOptions(output_facial_transformation_matrixes=True,
+# output_face_blendshapes=True) -- construct without error on both Windows
+# (dev machine, Python 3.12.1) and Linux (python:3.12-slim container, same
+# system libs as this Dockerfile). Constructing FaceLandmarkerOptions doesn't
+# require model_asset_path to point at a real file -- only create_from_options
+# does, which is why the model bundle is fetched separately at Docker build
+# time (see Dockerfile). No version bump was needed: 0.10.14 already
+# satisfies both the legacy `solutions` requirement (above) and the new
+# Tasks API requirement, so 1.0.0/0.10.35 were not tried.
 mediapipe==0.10.14
 numpy==2.5.1
 requests==2.32.5
