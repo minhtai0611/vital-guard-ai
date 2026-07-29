@@ -758,6 +758,17 @@ cannot.
   don't care about the model path don't all need updating, but allow
   override for tests that supply a fake).
 
+**Verified before writing this task (not assumed from memory):**
+`FacePresenceTracker.update()` (`services/trigger_emitter.py`, unchanged by
+this plan) is edge-triggered via its own `_unknown_active` guard flag — it
+returns `"UNKNOWN"` exactly once when sustained absence is first detected
+(`sustained and not self._unknown_active`), then `None` on every subsequent
+call while `has_face` stays `False`, only returning `"PRESENT"` once when a
+face reappears. So `if face_signal == "UNKNOWN":` below fires once per
+lost-face episode, not once per frame during the whole absence — confirmed
+by reading the actual current source, not carried over from an earlier
+session's memory of a different plan's Task 4.
+
 - [ ] **Step 1:** Rewrite `run_real_video()` in `main.py`:
   ```python
   def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
@@ -1290,3 +1301,12 @@ here.
      executed. Added Task 7 Step 6.5 to fix this, since this migration is a
      second undocumented deviation stacking on an already-undocumented first
      one.
+  6. A prior review round flagged a possible idempotency gap in Task 5's
+     `if face_signal == "UNKNOWN":` branch (could it fire every frame during
+     a prolonged face-loss period, not just once?) but the fix for it never
+     landed in the plan text. Resolved by reading the actual current
+     `FacePresenceTracker.update()` source (not relying on memory of an
+     earlier session/plan): it already guards with an `_unknown_active` flag
+     and is edge-triggered by construction, so the existing code was correct
+     — added an explicit "Verified before writing this task" note to Task 5
+     citing the exact mechanism, so this isn't an unstated assumption anymore.
