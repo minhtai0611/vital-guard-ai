@@ -1,3 +1,4 @@
+import math
 import types
 
 import jsonschema
@@ -62,6 +63,43 @@ def _fake_landmarker_with_no_face_ever():
     class _FakeLandmarker:
         def detect_for_video(self, mp_image, timestamp_ms):
             return no_face_result
+
+    return _FakeLandmarker()
+
+
+def _fake_landmarker_with_face_detected(blink_left=0.9, blink_right=0.85, pitch_deg=10.0):
+    """Fakes build_video_mode_landmarker's return value for the has_face=True
+    path: a FaceLandmarker whose detect_for_video() reports one detected
+    face, with a category-like list for face_blendshapes[0] (matching the
+    real mediapipe Category type's .category_name/.score interface used at
+    main.py's `c.category_name`/`c.score`) and a 4x4 rotation matrix for
+    facial_transformation_matrixes[0] (consumed by extract_pitch_deg, which
+    reads matrix[:3, :3] and returns the X Euler angle as pitch).
+
+    `pitch_deg` controls the resulting head_euler_angle_x by building a pure
+    X-axis rotation matrix -- rotation_matrix_to_euler_deg(R) for such a
+    matrix returns (pitch_deg, 0, 0) via atan2(sin, cos) on the R[2,1]/R[2,2]
+    and R[1,0]/R[0,0] terms.
+    """
+    categories = [
+        types.SimpleNamespace(category_name="eyeBlinkLeft", score=blink_left),
+        types.SimpleNamespace(category_name="eyeBlinkRight", score=blink_right),
+    ]
+    angle = math.radians(pitch_deg)
+    rotation_matrix = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, math.cos(angle), -math.sin(angle), 0.0],
+        [0.0, math.sin(angle), math.cos(angle), 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+    face_result = types.SimpleNamespace(
+        face_blendshapes=[categories],
+        facial_transformation_matrixes=[rotation_matrix],
+    )
+
+    class _FakeLandmarker:
+        def detect_for_video(self, mp_image, timestamp_ms):
+            return face_result
 
     return _FakeLandmarker()
 
@@ -180,6 +218,49 @@ def test_run_real_video_emits_unknown_after_sustained_lost_face(tmp_path, monkey
     assert any(p["state"] == "UNKNOWN" and p["reason"] == "lost_face" for p in served), (
         "sustained lost-face (3s of no-face frames) must emit an UNKNOWN/lost_face payload"
     )
+
+
+def test_run_real_video_processes_has_face_frames_end_to_end(tmp_path, monkeypatch):
+    """Exercises the has_face=True glue code added by the Face Landmarker
+    rewire (main.py's `blendshapes = {c.category_name: c.score for c in
+    result.face_blendshapes[0]}` and `pitch_deg =
+    extract_pitch_deg(result.facial_transformation_matrixes[0])`) end-to-end
+    through run_real_video(). Every other run_real_video test in this file
+    uses _fake_landmarker_with_no_face_ever, so none of them ever touch this
+    code path -- a regression in the attribute names, list indexing, or dict
+    construction here would not be caught by any existing test."""
+    import cv2
+    import main as main_module
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    # A handful of frames is enough to prove the has_face branch runs without
+    # error and writes sane CSV rows; sustained-trigger behavior is already
+    # covered by the mock-stream and lost-face tests.
+    frames = [frame] * 5
+    monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture(frames, fps=30.0))
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_face_detected(blink_left=0.9, blink_right=0.85, pitch_deg=12.0),
+    )
+
+    out_csv = tmp_path / "out.csv"
+    main_module.run_real_video("does-not-matter.mp4", out_csv, host="127.0.0.1", port=0)
+
+    rows = out_csv.read_text(encoding="utf-8").strip().splitlines()
+    header, data_rows = rows[0], rows[1:]
+    assert header.split(",") == ["ts", "has_face", "blink_score", "head_pitch", "score", "state", "signal"]
+    assert len(data_rows) == len(frames)
+
+    for row in data_rows:
+        ts, has_face, blink_score_col, head_pitch, score, state, signal = row.split(",")
+        assert has_face == "1"
+        # Non-empty and numeric -- confirms blink_score()/extract_pitch_deg()
+        # actually ran on the fake's category/matrix data rather than the
+        # has_face branch silently short-circuiting.
+        assert blink_score_col != ""
+        assert head_pitch != ""
+        assert float(blink_score_col) > 0.6  # (0.9 + 0.85) / 2 == 0.875, well above BLINK_CLOSE_THRESHOLD
+        assert float(head_pitch) == pytest.approx(12.0, abs=0.5)
 
 
 def test_sigterm_handler_sets_shutdown_flag():
