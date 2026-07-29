@@ -1,0 +1,279 @@
+# CV Backend Remediation — Acceptance Gate Results
+
+Task 7 of the `2026-07-28-cv-backend-remediation` plan. Run against the real
+Docker image (`vital-guard-dms:gate-check`, built fresh from the current
+`Dockerfile`) and the 3 real test videos (`out/normal.mp4`, `out/drowsy.mp4`,
+`out/distracted.mp4`), on 2026-07-29.
+
+**Known evidenced starting point (pre-remediation, before this plan began):**
+the drowsy video peaked at score **0.800** due to solvePnP flip-ambiguity in
+the old head-pose extraction — never reaching the 0.85 CRITICAL threshold.
+This document records whether the Face Landmarker migration (Tasks 1-6)
+fixed that.
+
+**Bottom line: both gates pass cleanly, no threshold adjustment or downscale
+was needed.** Post-migration drowsy max score: **0.975** (was 0.800
+pre-remediation). Gate 1 (physical plausibility): pass, zero jump artifacts.
+Gate 2 (score outcome): pass via path (a). Latency: pass, COMBINED p95 =
+15.7ms (budget: 150ms).
+
+---
+
+## Step 1 — Docker build
+
+```bash
+cd dms-ai-engine
+docker build -t vital-guard-dms:gate-check .
+```
+
+Result: **succeeded**. All 8 layers `CACHED` (from Tasks 1-6's prior builds —
+including the pinned `face_landmarker.task` model-bundle download), only the
+final image tag write was new. Confirms nothing in Tasks 1-6 broke the build.
+
+---
+
+## Step 2 — Re-run all 3 videos through the container
+
+```bash
+cd dms-ai-engine
+for name in normal drowsy distracted; do
+  MSYS_NO_PATHCONV=1 docker run --rm \
+    -v "$(pwd)/out/${name}.mp4:/data/${name}.mp4:ro" \
+    -v "$(pwd)/out:/app/out" \
+    vital-guard-dms:gate-check --video "/data/${name}.mp4" --host 0.0.0.0 --port 8765 \
+    --out-csv "/app/out/evidence_${name}_post_remediation.csv"
+done
+```
+
+All 3 runs exited 0. Stderr in each run was only MediaPipe/TFLite/absl
+startup noise (no GPU on this host, falls back to the CPU/XNNPACK delegate
+as designed — consistent with Decision 4's explicit-CPU-delegate choice) and
+one deprecation warning from `google.protobuf`; no errors, no crashes.
+Representative output (identical shape for all 3 runs):
+
+```
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1785319577.915045       1 task_runner.cc:85] GPU suport is not available: INTERNAL: ; RET_CHECK failure (mediapipe/gpu/gl_context_egl.cc:77) display != EGL_NO_DISPLAYeglGetDisplay() returned error 0x300c
+W0000 00:00:1785319577.943276       1 face_landmarker_graph.cc:174] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1785319577.990453      56 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1785319578.011175      71 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+/usr/local/lib/python3.12/site-packages/google/protobuf/symbol_database.py:55: UserWarning: SymbolDatabase.GetPrototype() is deprecated. Please use message_factory.GetMessageClass() instead. SymbolDatabase.GetPrototype() will be removed soon.
+  warnings.warn('SymbolDatabase.GetPrototype() is deprecated. Please '
+```
+
+Output CSVs (all in `dms-ai-engine/out/`, gitignored — evidence artifacts,
+not committed):
+
+| File | Rows (incl. header) |
+|---|---|
+| `evidence_normal_post_remediation.csv` | 79 |
+| `evidence_drowsy_post_remediation.csv` | 101 |
+| `evidence_distracted_post_remediation.csv` | 103 |
+
+CSV columns: `ts,has_face,blink_score,head_pitch,score,state,signal`.
+
+---
+
+## Step 3 — Gate 1: physical plausibility (pitch trajectory jump check)
+
+```bash
+awk -F',' '
+  NR>1 && $4!="" {
+    if (prev_val != "" && NR == prev_row + 1) {
+      diff = $4 - prev_val
+      if (diff < 0) diff = -diff
+      if (diff > 90) print "JUMP at row " NR ": " prev_val " -> " $4
+    } else if (prev_val != "" && NR != prev_row + 1) {
+      print "SKIPPED (gap after face loss, rows " prev_row " -> " NR "): " prev_val " -> " $4 " -- not compared"
+    }
+    prev_val = $4
+    prev_row = NR
+  }
+' out/evidence_drowsy_post_remediation.csv
+```
+
+Full output (only line printed):
+
+```
+SKIPPED (gap after face loss, rows 68 -> 86): 21.8 -> -11.7 -- not compared
+```
+
+**Result: Gate 1 PASSES.** Zero `JUMP` lines — no flip-ambiguity artifact in
+the post-migration pitch signal anywhere in the drowsy clip. The one
+`SKIPPED` line is exactly the informational, non-failure case the check is
+designed to surface: rows 68→86 span a face-loss gap (no face detected for
+that stretch, consistent with the identical gap Task 3's own probe found at
+frames 67-83 of this same video — most likely a brief occlusion/extreme-angle
+moment during the droop, not a bug), so the large raw diff (21.8° → -11.7°)
+across that gap is correctly *not* compared/flagged as a jump.
+
+### Visual cross-check
+
+Extracted stills via `ffmpeg -ss <t> -i out/drowsy.mp4 -frames:v 1 <out>.png`
+at t=0.0s, t=1.2s, t=2.2s and viewed them directly against the CSV's
+`head_pitch` column at those timestamps:
+
+| t | CSV `head_pitch` | Visual |
+|---|---|---|
+| 0.0s | -3.9° | Driver upright, eyes open, looking forward (near-baseline). |
+| 1.2s | 7.1° | Head visibly drooping down, eyes closed — score crosses CRITICAL (0.857) at this exact row. |
+| 2.2s | 21.8° | Head at its most drooped, chin down, eyes closed — largest pitch value in the whole run. |
+
+Numeric direction (increasing positive pitch as the head visibly droops
+further down) matches what's seen in the source video at all 3 checkpoints —
+consistent with Task 3's established "head down = positive pitch" sign
+convention. No contradiction found.
+
+---
+
+## Step 3.5 — Blink-hysteresis threshold sanity check against real data
+
+Current constants in `services/eye_state.py`:
+`BLINK_CLOSE_THRESHOLD = 0.55`, `BLINK_REOPEN_THRESHOLD = 0.35`.
+
+```bash
+awk -F',' 'NR>1 && $1+0>=0.6 && $1+0<=1.2 {print $3}' out/evidence_drowsy_post_remediation.csv
+awk -F',' 'NR>1 && $1+0<0.3 {print $3}' out/evidence_drowsy_post_remediation.csv
+```
+
+**Closed-eye segment (t=0.6-1.2s, droop window, `blink_score` column):**
+
+```
+0.747
+0.755
+0.731
+0.718
+0.704
+0.675
+0.678
+0.678
+0.669
+0.662
+0.659
+0.637
+0.639
+0.633
+0.590
+0.610
+0.606
+0.602
+0.605
+```
+
+Min = **0.590**, max = **0.755**. All 19 values are above
+`BLINK_CLOSE_THRESHOLD` (0.55), with the closest approach (0.590) still
+0.04 above the threshold.
+
+**Open-eye segment (t<0.3s, first ~0.3s, `blink_score` column):**
+
+```
+0.172
+0.112
+0.140
+0.143
+0.141
+0.136
+0.131
+0.128
+0.127
+```
+
+Min = 0.112, max = **0.172**. All 9 values are below
+`BLINK_REOPEN_THRESHOLD` (0.35), with the closest approach (0.172) still
+0.178 below the threshold.
+
+**Result: no adjustment needed.** Both segments are reliably and cleanly
+separated from their respective thresholds against real footage — the
+closed-eye segment never dips below 0.590 (threshold 0.55) and the open-eye
+segment never rises above 0.172 (threshold 0.35). Per the brief, since no
+adjustment was triggered, Task 5's test suite re-run and Step 2's video
+re-run were not required — this closes the loop Task 4 Step 4 opened without
+needing a code change.
+
+---
+
+## Step 4 — Gate 2: score outcome
+
+```bash
+for f in out/evidence_normal_post_remediation.csv out/evidence_drowsy_post_remediation.csv out/evidence_distracted_post_remediation.csv; do
+  echo "=== $f ==="
+  awk -F',' 'NR>1 && $2=="1" && $5!="" {print $5}' "$f" | sort -g | tail -1
+done
+```
+
+Full output:
+
+```
+=== out/evidence_normal_post_remediation.csv ===
+0.333
+=== out/evidence_drowsy_post_remediation.csv ===
+0.975
+=== out/evidence_distracted_post_remediation.csv ===
+0.000
+```
+
+**Result: Gate 2 PASSES via path (a).** Drowsy's max score is **0.975**
+(≥0.85 — the drowsy video actually reaches and sustains CRITICAL, first
+crossing 0.85 at t=1.20s per the CSV: `1.20,1,0.605,7.1,0.857,CRITICAL,`),
+and neither normal (max 0.333) nor distracted (max 0.000) ever reach
+CRITICAL. This is the fix over the pre-remediation baseline of 0.800 — the
+Face Landmarker migration resolved the flip-ambiguity ceiling.
+
+Distracted's max score of exactly 0.000 across all 102 face-visible frames
+was sanity-checked (`awk -F',' 'NR>1 && $2=="1" {print $5}' out/evidence_distracted_post_remediation.csv | sort -g | uniq -c`
+→ `102 0.000`): expected, not a bug — the distracted clip is a large-yaw
+head-turn with eyes open throughout (per Task 3's own combined-motion probe
+against this same clip), so neither the blink-closure nor head-pitch-droop
+signal ever fires; the composite score correctly stays at its floor.
+
+---
+
+## Step 5 — Latency
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm \
+  -v "$(pwd)/out/normal.mp4:/data/normal.mp4:ro" \
+  -v "$(pwd)/out/drowsy.mp4:/data/drowsy.mp4:ro" \
+  -v "$(pwd)/out/distracted.mp4:/data/distracted.mp4:ro" \
+  -v "$(pwd)/measure_latency.py:/app/measure_latency.py:ro" \
+  --entrypoint python vital-guard-dms:gate-check /app/measure_latency.py \
+  /data/normal.mp4 /data/drowsy.mp4 /data/distracted.mp4
+```
+
+Full output (mediapipe/absl startup noise omitted — identical to Step 2's):
+
+```
+/data/normal.mp4: n=78 p50=14.0ms p95=16.5ms
+/data/drowsy.mp4: n=100 p50=13.8ms p95=16.9ms
+/data/distracted.mp4: n=102 p50=13.7ms p95=14.9ms
+COMBINED across 3 videos: n=280 p50=13.8ms p95=15.7ms p99=39.8ms
+```
+
+**Result: latency gate PASSES as-is.** COMBINED p95 = **15.7ms**, roughly
+**9.6x under** the 150ms budget (KPI target: p95 ≤ 150ms). No downscale
+(Decision 5 option (a)) or relaxed-KPI documentation (option (b)) was
+triggered — measured on the real Docker container image on this dev host's
+CPU delegate, per Decision 4's requirement to measure inside the real
+container, not just on the bare dev machine.
+
+(Ran exactly as scripted in the brief — `measure_latency.py` takes positional
+video paths only (`sys.argv[1:]`), no separate model-path argument, since it
+hardcodes `/app/models/face_landmarker.task`, matching where the Dockerfile
+bakes the model.)
+
+---
+
+## Overall outcome
+
+| Gate | Result | Detail |
+|---|---|---|
+| Gate 1 (physical plausibility) | **PASS** | 0 jump artifacts; 1 informational skip across a real face-loss gap; visual cross-check at 3 timestamps confirms direction |
+| Gate 2 (score outcome) | **PASS via (a)** | drowsy max 0.975 ≥ 0.85; normal max 0.333, distracted max 0.000, neither reaches CRITICAL |
+| Blink-threshold sanity check (3.5) | **PASS, no adjustment** | closed-eye segment min 0.590 > 0.55; open-eye segment max 0.172 < 0.35 |
+| Latency (Step 5) | **PASS** | COMBINED p95 15.7ms ≤ 150ms budget |
+| Downscale decision | **Not triggered** | latency already well under budget |
+
+No further work is required by this plan. Threshold/sustain-window tuning
+beyond what's already validated here remains explicitly out of this plan's
+scope (per the brief's own path-(b) contingency, which did not trigger).
