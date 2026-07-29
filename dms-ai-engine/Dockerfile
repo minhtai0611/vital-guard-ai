@@ -23,14 +23,23 @@ WORKDIR /app
 # face_landmarker.task is fetched at BUILD time only, never at runtime --
 # preserves the no-cloud-round-trip-in-the-runtime-path principle. Baked
 # into the image so a running container never needs network access to
-# function. Verified 2026-07-29: URL returns HTTP 200, Content-Length
-# 3758596 bytes (~3.58 MiB). Placed before `COPY services/`/`COPY main.py`
+# function. Pinned to the numbered path (float16/1/), NOT float16/latest/ --
+# `latest` is a moving alias, so a future rebuild (e.g. during final on-stage
+# demo prep, possibly weeks after this line was written) could silently bake
+# in a different model artifact with no build failure and no signal anything
+# changed. Verified 2026-07-29: this exact numbered URL returns HTTP 200,
+# Content-Length 3758596 bytes (~3.58 MiB), identical ETag/MD5
+# (b0e7274907a1644404fef66b28dd6d85 / sOcnSQehZEQE/vZrKN1thQ==) to what
+# `latest` resolved to on the same day -- i.e. version 1 IS the artifact
+# `latest` currently points at. Placed before `COPY services/`/`COPY main.py`
 # so Docker's layer cache keeps this (large, slow) download cached across
-# rebuilds that only touch Python source. Verify the URL below is still
-# current before relying on it.
+# rebuilds that only touch Python source. If MediaPipe ever publishes a
+# face_landmarker v2, this URL will keep resolving to v1 (reproducible,
+# no silent drift) -- bumping to a newer version is then a deliberate,
+# reviewed change to this line, not something that happens for free.
 RUN mkdir -p /app/models && \
     curl -fL -o /app/models/face_landmarker.task \
-    "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

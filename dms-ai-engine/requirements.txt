@@ -28,6 +28,17 @@
 # time (see Dockerfile). No version bump was needed: 0.10.14 already
 # satisfies both the legacy `solutions` requirement (above) and the new
 # Tasks API requirement, so 1.0.0/0.10.35 were not tried.
+#
+# face_landmarker.task model bundle (2026-07-29, updated): the Dockerfile
+# fetches this from the version-pinned path
+# .../face_landmarker/face_landmarker/float16/1/face_landmarker.task, not
+# .../float16/latest/ -- `latest` is a moving alias and would let a future
+# rebuild silently swap in a different model artifact with no build failure.
+# Version 1 was confirmed to be exactly the artifact `latest` pointed at on
+# 2026-07-29 (identical Content-Length 3758596 bytes and identical ETag/MD5
+# b0e7274907a1644404fef66b28dd6d85 / sOcnSQehZEQE/vZrKN1thQ==). Bumping to a
+# future face_landmarker v2, if MediaPipe ever publishes one, is a deliberate
+# edit to the Dockerfile URL, not something that happens on its own.
 mediapipe==0.10.14
 numpy==2.5.1
 requests==2.32.5
