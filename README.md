@@ -29,7 +29,7 @@ Setup:
 ```bash
 cd dms-ai-engine
 pip install -r requirements.txt
-python dms_detector.py
+python main.py --mock
 ```
 
 ### `aaos-cockpit-app/`
