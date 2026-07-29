@@ -7,17 +7,19 @@
 # opencv-python-headless, because mediapipe's own opencv-contrib-python wins
 # the shared cv2 namespace anyway).
 #
-# mediapipe==0.10.14 is pinned, not the latest (1.0.0), because 1.0.0 (and even
-# 0.10.35) dropped the legacy `mediapipe.solutions` Python API entirely from
-# their Windows wheel (confirmed: only `Image`/`ImageFormat`/`tasks` exposed,
-# no `solutions` at all) — main.py's run_real_video() uses
-# mp.solutions.face_mesh.FaceMesh(), so a newer mediapipe would break it on
-# Windows dev machines. On Linux, 0.10.14 still ships mediapipe.python.solutions
-# and works correctly once the system libs in ../Dockerfile are installed
-# (libgl1, libglib2.0-0, libsm6, libxext6, libxrender1, libxcb1, libgomp1).
+# mediapipe==0.10.14 is pinned (not the latest 1.0.0/0.10.35) because it is the
+# version this repo's Face Landmarker migration was actually verified against.
+# main.py no longer uses the legacy `mp.solutions.face_mesh.FaceMesh()` API at
+# all -- that backend was fully replaced by the Tasks API (see "Tasks API
+# verification" below); a grep for `mp.solutions` across dms-ai-engine/ returns
+# nothing. The pin exists purely to lock in a version whose Tasks API surface
+# was hands-on verified to work end-to-end, not to preserve any legacy
+# `mediapipe.solutions` dependency. System libs required either way (Linux
+# container): libgl1, libglib2.0-0, libsm6, libxext6, libxrender1, libxcb1,
+# libgomp1 (see ../Dockerfile).
 #
 # Tasks API verification (2026-07-29): confirmed mediapipe==0.10.14 exposes
-# the Tasks API surface this plan's remaining tasks need --
+# the Tasks API surface this repo's real (non-mock) pipeline needs --
 # mediapipe.tasks.python.vision.FaceLandmarker /
 # vision.FaceLandmarkerOptions(output_facial_transformation_matrixes=True,
 # output_face_blendshapes=True) -- construct without error on both Windows
@@ -25,9 +27,10 @@
 # system libs as this Dockerfile). Constructing FaceLandmarkerOptions doesn't
 # require model_asset_path to point at a real file -- only create_from_options
 # does, which is why the model bundle is fetched separately at Docker build
-# time (see Dockerfile). No version bump was needed: 0.10.14 already
-# satisfies both the legacy `solutions` requirement (above) and the new
-# Tasks API requirement, so 1.0.0/0.10.35 were not tried.
+# time (see Dockerfile). No version bump beyond 0.10.14 has been needed since
+# this migration landed; if a future upgrade is considered, re-verify
+# FaceLandmarkerOptions construction on both platforms before bumping (1.0.0/
+# 0.10.35 have not been tried against this repo's actual usage).
 #
 # face_landmarker.task model bundle (2026-07-29, updated): the Dockerfile
 # fetches this from the version-pinned path

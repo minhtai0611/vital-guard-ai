@@ -64,6 +64,13 @@ def _fake_landmarker_with_no_face_ever():
         def detect_for_video(self, mp_image, timestamp_ms):
             return no_face_result
 
+        def close(self):
+            """Real FaceLandmarker.close() releases its native graph/TFLite
+            interpreter/thread pool -- run_real_video()/measure() now call this
+            unconditionally in their finally block, so the fake must support it
+            too or every test using this fake would raise AttributeError."""
+            pass
+
     return _FakeLandmarker()
 
 
@@ -100,6 +107,12 @@ def _fake_landmarker_with_face_detected(blink_left=0.9, blink_right=0.85, pitch_
     class _FakeLandmarker:
         def detect_for_video(self, mp_image, timestamp_ms):
             return face_result
+
+        def close(self):
+            """See _fake_landmarker_with_no_face_ever's close() for why this
+            exists: run_real_video()/measure() now call landmarker.close()
+            unconditionally in their finally block."""
+            pass
 
     return _FakeLandmarker()
 

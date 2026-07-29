@@ -38,6 +38,7 @@ def measure(video_path: str, model_path: str) -> list:
     event_counter = 0
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        landmarker.close()
         raise RuntimeError(
             f"Could not open video file: {video_path} "
             "(bad path, or a codec/container OpenCV's build doesn't support)"
@@ -53,47 +54,54 @@ def measure(video_path: str, model_path: str) -> list:
         fps = 30.0
     frame_dt = 1.0 / fps
 
-    while cap.isOpened():
-        start = time.perf_counter()
-        ret, frame = cap.read()
-        if not ret:
-            break
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        raw_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
-        result = landmarker.detect_for_video(mp_image, timestamp_guard.next(raw_ms))
-        has_face = bool(result.face_blendshapes)
+    try:
+        while cap.isOpened():
+            start = time.perf_counter()
+            ret, frame = cap.read()
+            if not ret:
+                break
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            raw_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+            result = landmarker.detect_for_video(mp_image, timestamp_guard.next(raw_ms))
+            has_face = bool(result.face_blendshapes)
 
-        face_signal = face_tracker.update(has_face=has_face, now=t)
-        if face_signal == "UNKNOWN":
-            event_counter += 1
-            store.update_latest(build_trigger_payload(
-                state="UNKNOWN", score=0.0, confidence=0.0,
-                perclos=0.0, eye_open_probability=0.0, head_euler_angle_x=0.0,
-                reason="lost_face", source="latency-check", event_counter=event_counter,
-            ))
-
-        if has_face:
-            blendshapes = {c.category_name: c.score for c in result.face_blendshapes[0]}
-            score_blink = blink_score(blendshapes)
-            eye_closed = blink_tracker.update(score_blink, now=t)
-            pitch_deg = extract_pitch_deg(result.facial_transformation_matrixes[0])
-            score = calc.add_frame(FrameFeatures(timestamp=t, eye_closed=eye_closed, head_pitch_deg=pitch_deg))
-            signal = emitter.update(score, now=t)
-            state = _state_for_score(score)
-            if signal in ("CRITICAL", "RECOVERED"):
+            face_signal = face_tracker.update(has_face=has_face, now=t)
+            if face_signal == "UNKNOWN":
                 event_counter += 1
                 store.update_latest(build_trigger_payload(
-                    state=state, score=score, confidence=1.0,
-                    perclos=calc.compute_score(), eye_open_probability=(1.0 - score_blink),
-                    head_euler_angle_x=pitch_deg,
-                    reason=("sustained_high_score" if signal == "CRITICAL" else "recovered"),
-                    source="latency-check", event_counter=event_counter,
+                    state="UNKNOWN", score=0.0, confidence=0.0,
+                    perclos=0.0, eye_open_probability=0.0, head_euler_angle_x=0.0,
+                    reason="lost_face", source="latency-check", event_counter=event_counter,
                 ))
-        latencies_ms.append((time.perf_counter() - start) * 1000.0)
-        t += frame_dt
 
-    cap.release()
+            if has_face:
+                blendshapes = {c.category_name: c.score for c in result.face_blendshapes[0]}
+                score_blink = blink_score(blendshapes)
+                eye_closed = blink_tracker.update(score_blink, now=t)
+                pitch_deg = extract_pitch_deg(result.facial_transformation_matrixes[0])
+                score = calc.add_frame(FrameFeatures(timestamp=t, eye_closed=eye_closed, head_pitch_deg=pitch_deg))
+                signal = emitter.update(score, now=t)
+                state = _state_for_score(score)
+                if signal in ("CRITICAL", "RECOVERED"):
+                    event_counter += 1
+                    store.update_latest(build_trigger_payload(
+                        state=state, score=score, confidence=1.0,
+                        perclos=calc.compute_score(), eye_open_probability=(1.0 - score_blink),
+                        head_euler_angle_x=pitch_deg,
+                        reason=("sustained_high_score" if signal == "CRITICAL" else "recovered"),
+                        source="latency-check", event_counter=event_counter,
+                    ))
+            latencies_ms.append((time.perf_counter() - start) * 1000.0)
+            t += frame_dt
+    finally:
+        cap.release()
+        # measure() is called once per video from the CLI loop below -- without
+        # this, a multi-video run leaks one FaceLandmarker (native MediaPipe
+        # graph/TFLite interpreter/thread pool) per video for the rest of the
+        # process's lifetime.
+        landmarker.close()
+
     return latencies_ms
 
 

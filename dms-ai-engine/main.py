@@ -4,14 +4,18 @@ Chạy: python3 main.py --mock
 Cần: pip install -r requirements.txt
 
 Việc của Phát trong vài ngày đầu (theo đúng mục 07 runbook, "Ngày đầu của AI"):
-  [ ] Đọc được 1 video, in FPS/timestamp                      <- khung sẵn dưới đây
-  [ ] Overlay mắt/head-pose (hoặc dùng model MediaPipe FaceMesh có sẵn)
-  [ ] Xuất CSV: ts, perclos, headPitch, score, state
+  [x] Đọc được 1 video, in FPS/timestamp                      <- run_real_video() dưới đây
+  [x] Overlay mắt/head-pose qua MediaPipe Face Landmarker (Tasks API: blendshapes cho
+      blink score + facial transformation matrix cho head pitch — không còn là
+      FaceMesh/EAR nữa)
+  [x] Xuất CSV: ts, perclos, headPitch, score, state
   [ ] Đảm bảo video "buồn ngủ" phát Trigger đúng 1 lần
 
-Phần eye-state/head-pose thật (MediaPipe FaceMesh) chưa cắm ở đây — để bạn tự
-nối vì cần video mẫu thật để tune ngưỡng eye-aspect-ratio/pitch. Khung dưới
-chạy được ngay ở chế độ --mock để tự test toàn bộ pipeline JSON/HTTP trước.
+Phần eye-state/head-pose thật ĐÃ được cắm vào run_real_video() — MediaPipe Face
+Landmarker (services/face_landmarker_client.py), blink score + hysteresis
+(services/eye_state.py), head pitch từ transformation matrix (services/head_pose.py).
+Chế độ --mock vẫn giữ lại để test nhanh toàn bộ pipeline JSON/HTTP mà không cần
+video/model thật.
 
 Trigger delivery: không còn POST tới --trigger-url nữa — Container Node giờ
 serve payload mới nhất qua LatestTriggerStore + trigger_server (local HTTP
@@ -150,6 +154,7 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        landmarker.close()
         server.shutdown()
         raise RuntimeError(
             f"Could not open video file: {video_path} "
@@ -219,6 +224,12 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
                 t += frame_dt
     finally:
         cap.release()
+        # FaceLandmarker owns a native MediaPipe graph/TFLite interpreter/thread
+        # pool -- never closing it leaks those resources for the life of the
+        # process. Only matters in-process here (run_real_video() is invoked
+        # once per container run today), but measure_latency.py calls this same
+        # construction once per video in a loop, where the leak is cumulative.
+        landmarker.close()
         server.shutdown()
 
 
