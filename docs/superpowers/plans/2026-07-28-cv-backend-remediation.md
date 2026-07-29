@@ -561,29 +561,35 @@ cannot.
       recovers it correctly regardless of composition order. This test
       combines two axes at once (matching how a real head actually moves --
       nod + turn together, not in isolation) under the SAME composition order
-      this module's own rotation_matrix_to_euler_deg assumes (R = Rz*Ry*Rx),
-      so it validates internal self-consistency of our chosen convention.
-      It does NOT prove facial_transformation_matrixes uses the same
-      convention -- that can only be checked empirically against real video
-      (Task 3 Step 3's combined-motion probe), which is a separate,
-      real-data-dependent check this synthetic test cannot replace."""
+      this module's own rotation_matrix_to_euler_deg assumes (R = Rz*Ry*Rx;
+      with the Z angle held at 0, that reduces to R = Ry @ Rx -- Ry applied
+      to the result of Rx, i.e. Ry's matrix LEFT-multiplies Rx's matrix), so
+      it validates internal self-consistency of our chosen convention. With
+      this exact order, both angles recover exactly (verified numerically:
+      x=20.0, y=15.0, z=0.0 to 1e-10 precision -- these are noiseless
+      analytic rotations, not real sensor data, so an exact match is the
+      correct bar, not a loose tolerance). It does NOT prove
+      facial_transformation_matrixes uses the same convention -- that can
+      only be checked empirically against real video (Task 3 Step 3's
+      combined-motion probe), which is a separate, real-data-dependent check
+      this synthetic test cannot replace."""
       pitch_angle, other_angle = 20.0, 15.0
-      combined = _rotation_matrix_x(pitch_angle) @ _rotation_matrix_y(other_angle)
-      pitch_alone = extract_pitch_deg(_rotation_matrix_x(pitch_angle))
-      pitch_combined = extract_pitch_deg(combined)
-      assert abs(pitch_combined - pitch_alone) < 5.0, (
-          f"combining a second axis of rotation shifted extracted pitch from "
-          f"{pitch_alone:.2f} to {pitch_combined:.2f} -- more than the expected "
-          f"small coupling error for this composition order"
-      )
+      combined = _rotation_matrix_y(other_angle) @ _rotation_matrix_x(pitch_angle)
+      x, y, z = rotation_matrix_to_euler_deg(combined)
+      assert abs(x - pitch_angle) < 0.01, f"expected pitch axis ~{pitch_angle}, got {x}"
+      assert abs(y - other_angle) < 0.01, f"expected other axis ~{other_angle}, got {y}"
+      assert abs(z) < 0.01, f"expected no leakage into the third (unrotated) axis, got {z}"
   ```
   (If Step 3's finding is `y` or `z` instead of `x`, swap which builder
   function plays the "pitch axis" vs "other axis" role throughout this file
   — do not leave a mismatch between the finding and the tests. The `@`
-  matrix-multiplication order in `test_combined_rotation_...` encodes the
-  same `Rz*Ry*Rx`-style composition assumed in `rotation_matrix_to_euler_deg`
-  — swap the multiplication order too if the chosen axis/convention changes
-  which matrix should be applied first.)
+  matrix-multiplication order in `test_combined_rotation_...` must stay
+  LEFT-multiplied by whichever matrix corresponds to the axis that composes
+  *outermost* under `R = Rz*Ry*Rx` (Z outermost, then Y, then X innermost) —
+  get this backwards and the test silently validates a different convention
+  than `rotation_matrix_to_euler_deg` actually implements, without
+  necessarily failing (a loose tolerance would hide it; the exact-match
+  assertions above are chosen specifically so a wrong order does fail).)
 - [ ] **Step 6:** Run: `pytest dms-ai-engine/tests/test_head_pose.py -v`
   Expected: all tests PASS. These test pure math (rotation matrices you
   construct by hand), so they run fine on Windows without needing the real
