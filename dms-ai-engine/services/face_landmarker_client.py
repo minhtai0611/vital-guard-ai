@@ -7,6 +7,7 @@ mode -- both required, never left to a default: see design doc Decisions
 occasionally be non-increasing between reads for some codecs/containers --
 VIDEO mode throws immediately (not a warning) on a non-monotonic timestamp.
 """
+import math
 from typing import Optional
 
 from mediapipe.tasks.python import vision
@@ -34,8 +35,17 @@ class MonotonicTimestamp:
         self._last: Optional[int] = None
 
     def next(self, raw_ms: float) -> int:
-        candidate = int(raw_ms)
-        if self._last is not None and candidate <= self._last:
-            candidate = self._last + 1
+        # int(raw_ms) raises ValueError on NaN and OverflowError on +-inf.
+        # cap.get(cv2.CAP_PROP_POS_MSEC) is a live camera/codec reading, not a
+        # trusted value -- some codecs/containers can return NaN/inf just as
+        # they can return a non-increasing value. Fall back the same way the
+        # non-increasing case already does, instead of ever calling int() on
+        # a non-finite float.
+        if not math.isfinite(raw_ms):
+            candidate = self._last + 1 if self._last is not None else 0
+        else:
+            candidate = int(raw_ms)
+            if self._last is not None and candidate <= self._last:
+                candidate = self._last + 1
         self._last = candidate
         return candidate

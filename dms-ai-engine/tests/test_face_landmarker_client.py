@@ -23,3 +23,28 @@ def test_monotonic_timestamp_bumps_a_non_increasing_reading():
 def test_monotonic_timestamp_first_call_accepts_zero():
     m = MonotonicTimestamp()
     assert m.next(0.0) == 0
+
+
+def test_monotonic_timestamp_falls_back_instead_of_raising_on_nan():
+    """int(float('nan')) raises ValueError. A NaN raw_ms is a real risk, not a
+    theoretical one -- main.py/measure_latency.py feed this straight from a
+    live cap.get(cv2.CAP_PROP_POS_MSEC) read, which some codecs/containers can
+    report as NaN. This must fall back to _last + 1 instead of crashing the
+    whole VIDEO-mode inference loop."""
+    m = MonotonicTimestamp()
+    assert m.next(100.0) == 100
+    assert m.next(float("nan")) == 101, "NaN must fall back to _last + 1, not raise"
+    assert m.next(102.0) == 102, "a later genuine reading resumes passing through normally"
+
+
+def test_monotonic_timestamp_falls_back_instead_of_raising_on_positive_infinity():
+    """int(float('inf')) raises OverflowError. Also covers the case where the
+    very first reading ever seen is non-finite -- _last is still None, so the
+    fallback must be 0, not an attempt to add 1 to None."""
+    m = MonotonicTimestamp()
+    assert m.next(float("inf")) == 0, "first-ever call with +inf must fall back to 0, not raise"
+
+    m2 = MonotonicTimestamp()
+    assert m2.next(50.0) == 50
+    assert m2.next(float("inf")) == 51, "+inf after a real reading must fall back to _last + 1"
+    assert m2.next(60.0) == 60, "a later genuine reading resumes passing through normally"
