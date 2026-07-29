@@ -10,6 +10,7 @@ deployment target regardless).
 
 Usage: python measure_latency.py video1.mp4 video2.mp4 ...
 """
+import math
 import sys
 import time
 
@@ -36,9 +37,20 @@ def measure(video_path: str, model_path: str) -> list:
     store = LatestTriggerStore()
     event_counter = 0
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"Could not open video file: {video_path} "
+            "(bad path, or a codec/container OpenCV's build doesn't support)"
+        )
     latencies_ms = []
     t = 0.0
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    # `fps or 30.0` only catches falsy values (0/None) — a negative number or
+    # NaN is truthy in Python and would silently corrupt the timestamp
+    # progression (frame_dt going negative or NaN), breaking TriggerEmitter's
+    # sustain-window timing. Validate the value itself, not just its truthiness.
+    if not math.isfinite(fps) or fps <= 0:
+        fps = 30.0
     frame_dt = 1.0 / fps
 
     while cap.isOpened():
