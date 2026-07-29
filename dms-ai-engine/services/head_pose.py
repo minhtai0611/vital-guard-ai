@@ -1,73 +1,56 @@
 """
 head_pose
 ---------
-Head pitch estimation via OpenCV solvePnP against a canonical 3D face model,
-using 6 MediaPipe FaceMesh landmark correspondences — a standard, well-documented
-technique (not a heuristic guess). Positive pitch = head drooping forward/down.
+Head pitch estimation from MediaPipe Face Landmarker's
+facial_transformation_matrixes -- a full learned 3D face model fit, not a
+from-scratch solvePnP solve, which is why this doesn't suffer the
+PnP flip-ambiguity that affected the old 6-point solvePnP approach (see
+docs/superpowers/specs/2026-07-28-cv-backend-remediation-design.md).
+
+The pitch axis below was determined empirically against real reference
+video (dms-ai-engine/out/drowsy.mp4's visible head-droop segment,
+~t=0.6-1.2s), not derived analytically -- Face Landmarker's canonical face
+model convention isn't a convention this project chose, unlike the old
+6-point model.
+
+Empirical finding: the X component of rotation_matrix_to_euler_deg is
+pitch. Evidence from the probe (dms-ai-engine/out/probe_pitch_axis.py, run
+against drowsy.mp4 inside the real container):
+  - t=0ms   (baseline, upright, frame verified visually):    x=-3.88  y= 1.01  z=-1.50
+  - t=600ms (droop window start, eyes closing, slight droop): x=-4.97  y=-0.96  z= 0.68
+  - t=1200ms (droop window end, visibly drooped, frame verified): x= 7.14  y=-5.41  z= 5.83
+  - t=2200ms (sustained droop, deepest visible droop, frame verified): x=21.82  y=-11.91 z=12.07
+x rises monotonically and by far the largest margin (~-4 deg to ~22 deg,
+a ~26 deg swing) across the droop window and its sustained continuation,
+tracking the visibly-increasing head-down posture confirmed by inspecting
+the actual video frames at each of those timestamps. y and z also drift
+during the same window (a real driver's head droop is not a pure clean
+nod -- some coupling into the other axes is expected) but by a smaller
+margin than x, and a combined-motion probe against distracted.mp4 (a
+segment with a large yaw sweep from a head turn, y ranging roughly
++23 to -40 deg) showed x staying largely contained within a ~-9 to -3 deg
+band -- i.e. pitch (x) is not grossly contaminated by a large yaw
+excursion. Sign convention: x increases as the head visibly droops
+further down, matching this module's "head down = positive" pitch
+convention.
 """
 import math
-from typing import List, Tuple
+from typing import Tuple
 
-import cv2
 import numpy as np
 
-# MediaPipe FaceMesh indices for: nose tip, chin, right eye outer corner,
-# left eye outer corner, mouth right corner, mouth left corner.
-MODEL_LANDMARK_INDICES = [1, 152, 33, 263, 61, 291]
 
-# Canonical 3D face model (millimeters, arbitrary but internally consistent
-# scale — solvePnP only needs consistent relative geometry, not real-world
-# units, since we only read the rotation, not the translation).
-MODEL_3D_POINTS = np.array([
-    (0.0, 0.0, 0.0),        # nose tip
-    (0.0, -63.6, -12.5),    # chin
-    (-43.3, 32.7, -26.0),   # right eye outer corner
-    (43.3, 32.7, -26.0),    # left eye outer corner
-    (-28.9, -28.9, -24.1),  # mouth right corner
-    (28.9, -28.9, -24.1),   # mouth left corner
-], dtype=np.float64)
+def rotation_matrix_to_euler_deg(matrix: np.ndarray) -> Tuple[float, float, float]:
+    """matrix: a 4x4 (or already-3x3) transformation matrix from
+    facial_transformation_matrixes. Returns (x, y, z) Euler angles in
+    degrees via the standard rotation-matrix decomposition."""
+    R = matrix[:3, :3]
+    x = math.degrees(math.atan2(R[2, 1], R[2, 2]))
+    y = math.degrees(math.atan2(-R[2, 0], math.sqrt(R[2, 1] ** 2 + R[2, 2] ** 2)))
+    z = math.degrees(math.atan2(R[1, 0], R[0, 0]))
+    return x, y, z
 
 
-def estimate_pitch_deg(landmarks: List[Tuple[float, float]], frame_width: int, frame_height: int) -> float:
-    """Estimate head pitch in degrees from 2D landmarks via solvePnP.
-
-    NOTE: the camera intrinsics below (focal_length = frame_width, principal
-    point at the frame center, zero lens distortion) are a standard pinhole
-    approximation, not a real per-device camera calibration. This is a
-    reasonable engineering default for this use case, but the absolute pitch
-    value should be treated as approximate, not metrologically validated,
-    until/unless calibrated against the actual deployment camera.
-
-    NOTE: the Euler extraction below (`atan2(R[2,1], R[2,2])`) is deliberately
-    sensitive to rotation about the model's local X axis (MODEL_3D_POINTS'
-    ear-to-ear / interaural axis, since the eye corners sit at X=-43.3/+43.3)
-    -- the axis a physical head nod actually rotates about -- and is blind to
-    rotation about the local Y axis (vertical, turning the head left/right,
-    i.e. yaw). An earlier version of this function used
-    `atan2(-R[2,0], sqrt(R[0,0]**2 + R[1,0]**2))`, which is the mirror image:
-    sensitive to Y (yaw), blind to X (pitch) -- i.e. it was silently returning
-    yaw instead of pitch. See test_head_pose.py's
-    test_pitch_is_insensitive_to_pure_yaw_rotation for the regression guard.
-    """
-    image_points = np.array(
-        [landmarks[i] for i in MODEL_LANDMARK_INDICES], dtype=np.float64
-    )
-    focal_length = frame_width
-    center = (frame_width / 2, frame_height / 2)
-    camera_matrix = np.array([
-        [focal_length, 0, center[0]],
-        [0, focal_length, center[1]],
-        [0, 0, 1],
-    ], dtype=np.float64)
-    dist_coeffs = np.zeros((4, 1))
-
-    success, rotation_vec, _translation_vec = cv2.solvePnP(
-        MODEL_3D_POINTS, image_points, camera_matrix, dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE,
-    )
-    if not success:
-        return 0.0
-
-    rotation_matrix, _ = cv2.Rodrigues(rotation_vec)
-    pitch_rad = math.atan2(rotation_matrix[2, 1], rotation_matrix[2, 2])
-    return math.degrees(pitch_rad)
+def extract_pitch_deg(transformation_matrix: np.ndarray) -> float:
+    x, y, z = rotation_matrix_to_euler_deg(transformation_matrix)
+    return x  # empirically determined to be pitch -- see module docstring
