@@ -34,6 +34,14 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        unitTests {
+            // No Robolectric in this repo yet (see design doc) - android.util.Log calls in
+            // DrowsinessController would otherwise throw "not mocked" in plain JVM unit tests.
+            returnDefaultValues = true
+        }
+    }
 }
 
 dependencies {

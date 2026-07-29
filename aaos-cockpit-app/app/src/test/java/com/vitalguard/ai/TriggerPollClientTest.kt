@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package com.vitalguard.ai
 
 import kotlinx.coroutines.test.advanceTimeBy
