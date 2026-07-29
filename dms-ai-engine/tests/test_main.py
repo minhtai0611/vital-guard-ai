@@ -117,6 +117,46 @@ def _fake_landmarker_with_face_detected(blink_left=0.9, blink_right=0.85, pitch_
     return _FakeLandmarker()
 
 
+def _fake_landmarker_with_time_varying_pitch(calibration_frames, calibration_pitch_deg, drooped_pitch_deg,
+                                              blink_left=0.9, blink_right=0.85):
+    """Fakes a session where the first `calibration_frames` frames report a
+    constant `calibration_pitch_deg` (simulating a camera/seat-tilt offset
+    that is not 0deg), and every frame after that reports `drooped_pitch_deg`
+    with high blink scores -- used to test that run_real_video() calibrates
+    DrowsinessScoreCalculator's baseline from the early frames so later droop
+    is measured RELATIVE to that baseline, not against a hardcoded 0deg."""
+    categories = [
+        types.SimpleNamespace(category_name="eyeBlinkLeft", score=blink_left),
+        types.SimpleNamespace(category_name="eyeBlinkRight", score=blink_right),
+    ]
+
+    def _matrix_for(pitch_deg):
+        angle = math.radians(pitch_deg)
+        return np.array([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, math.cos(angle), -math.sin(angle), 0.0],
+            [0.0, math.sin(angle), math.cos(angle), 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ])
+
+    calibration_matrix = _matrix_for(calibration_pitch_deg)
+    drooped_matrix = _matrix_for(drooped_pitch_deg)
+
+    class _FakeLandmarker:
+        def __init__(self):
+            self._call_count = 0
+
+        def detect_for_video(self, mp_image, timestamp_ms):
+            matrix = calibration_matrix if self._call_count < calibration_frames else drooped_matrix
+            self._call_count += 1
+            return types.SimpleNamespace(face_blendshapes=[categories], facial_transformation_matrixes=[matrix])
+
+        def close(self):
+            pass
+
+    return _FakeLandmarker()
+
+
 def test_build_trigger_payload_matches_schema():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     payload = build_trigger_payload(
@@ -274,6 +314,57 @@ def test_run_real_video_processes_has_face_frames_end_to_end(tmp_path, monkeypat
         assert head_pitch != ""
         assert float(blink_score_col) > 0.6  # (0.9 + 0.85) / 2 == 0.875, well above BLINK_CLOSE_THRESHOLD
         assert float(head_pitch) == pytest.approx(12.0, abs=0.5)
+
+
+def test_run_real_video_calibrates_baseline_from_first_second_of_pitch_readings(tmp_path, monkeypatch):
+    """Reproduces a real finding from a 3-minute real driver video: the
+    camera's "neutral" head pitch reading was never 0deg (it read consistently
+    negative), so relative head-droop was always clamped to 0 and the
+    composite score could never exceed 0.55+0.25=0.80 -- one point below the
+    0.85 CRITICAL threshold -- no matter how closed the driver's eyes got.
+    `DrowsinessScoreCalculator.calibrate_baseline()` existed and was
+    unit-tested in isolation (test_dms.py) but was never wired into
+    run_real_video(). This test reproduces the same shape of bug with a fake
+    landmarker: a -10deg "neutral" reading for the first second, then a real
+    droop to -2deg (still net-negative, i.e. still below the un-calibrated
+    0deg baseline) with sustained eye closure -- only measuring droop
+    RELATIVE to the calibrated baseline can push the score across 0.85."""
+    import cv2
+    import main as main_module
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    fps = 30.0
+    calibration_frames = 30  # 1.0s at 30fps
+    sustained_frames = 100   # 3.33s at 30fps, comfortably past the 2.0s sustain window
+    frames = [frame] * (calibration_frames + sustained_frames)
+
+    monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture(frames, fps=fps))
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_time_varying_pitch(
+            calibration_frames=calibration_frames,
+            calibration_pitch_deg=-10.0,
+            drooped_pitch_deg=-2.0,
+        ),
+    )
+
+    served = []
+    original_update_latest = main_module.LatestTriggerStore.update_latest
+
+    def spy_update_latest(self, payload):
+        served.append(payload)
+        return original_update_latest(self, payload)
+
+    monkeypatch.setattr(main_module.LatestTriggerStore, "update_latest", spy_update_latest)
+
+    main_module.run_real_video("does-not-matter.mp4", tmp_path / "out.csv", host="127.0.0.1", port=0)
+
+    assert any(p["state"] == "CRITICAL" for p in served), (
+        "an 8deg relative droop (from a calibrated -10deg baseline to -2deg) plus sustained eye "
+        "closure should cross the 0.85 threshold once the baseline is correctly subtracted -- "
+        "without calibration, the -2deg raw reading alone clamps the droop term to 0 and caps the "
+        "score at 0.80, exactly the ceiling observed on the real full-stream-facemp4.mp4 footage"
+    )
 
 
 def test_sigterm_handler_sets_shutdown_flag():

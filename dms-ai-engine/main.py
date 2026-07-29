@@ -35,6 +35,17 @@ from services.trigger_server import LatestTriggerStore, start_background_server
 
 TRIGGER_SCHEMA_VERSION = "1.0"
 
+# DrowsinessScoreCalculator.calibrate_baseline() existed and was unit-tested
+# in isolation but was never called from run_real_video() -- on any camera
+# mount whose "neutral" head pitch isn't ~0deg, head-droop was silently
+# clamped to 0 for the entire video, capping the composite score at 0.80
+# (0.55 perclos + 0.25 eye_closed_now), one point below the 0.85 CRITICAL
+# threshold, regardless of eye closure. Confirmed on a real 3-minute driver
+# video whose pitch stayed in [-27.6, -3.8]deg throughout. 1.0s is long
+# enough to average out per-frame noise (~30 samples at 30fps) while staying
+# short enough not to eat into a short clip's droop-detection window.
+BASELINE_CALIBRATION_SECONDS = 1.0
+
 # A container's main process runs as PID 1 — Linux does NOT apply the default
 # terminate-on-SIGTERM disposition to PID 1 unless a handler is registered.
 # Confirmed empirically: without this, `docker stop` had to fall back to
@@ -166,6 +177,8 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
     face_tracker = FacePresenceTracker(sustain_seconds=2.0)
     event_counter = 0
     t = 0.0
+    calibration_pitch_samples = []
+    baseline_calibrated = False
     fps = cap.get(cv2.CAP_PROP_FPS)
     # `fps or 30.0` only catches falsy values (0/None) — a negative number or
     # NaN is truthy in Python and would silently corrupt the timestamp
@@ -205,6 +218,15 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
                     score_blink = blink_score(blendshapes)
                     eye_closed = blink_tracker.update(score_blink, now=t)
                     pitch_deg = extract_pitch_deg(result.facial_transformation_matrixes[0])
+
+                    if not baseline_calibrated:
+                        if t < BASELINE_CALIBRATION_SECONDS:
+                            calibration_pitch_samples.append(pitch_deg)
+                        else:
+                            if calibration_pitch_samples:
+                                calc.calibrate_baseline(sum(calibration_pitch_samples) / len(calibration_pitch_samples))
+                            baseline_calibrated = True
+
                     score = calc.add_frame(FrameFeatures(timestamp=t, eye_closed=eye_closed, head_pitch_deg=pitch_deg))
                     signal = emitter.update(score, now=t)
                     state = _state_for_score(score)
