@@ -329,3 +329,72 @@ not defects blocking this plan's completion:
 None of these affect the acceptance-gate outcome recorded above or the
 correctness of the shipped CV pipeline — they're worth picking up as
 follow-up work, prioritized roughly in the order listed.
+
+---
+
+## Regression pass against 5 real videos (2 new long multi-state clips added)
+
+Re-ran the full system after 2 new videos were added, each spanning all 3
+states in one continuous clip rather than isolating one state each:
+`out/full-stream-2.mp4` (19.27s, 1080x1920 portrait) and
+`out/full-stream-facemp4.mp4` (184.14s, 1280x720). Unit suite: 55/55 (54
+original + 1 new). Fresh Docker build, all 5 videos run clean (exit 0).
+
+**Gate 1 (physical plausibility): PASS on all 5**, zero >90° pitch jumps —
+including both new videos, one of which (full-stream-2.mp4, portrait/
+different resolution) was not part of the original validation set. Latency:
+COMBINED p95 across all 5 = 18.5ms, still ~8x under the 150ms budget.
+
+**Real bug found and fixed: baseline pitch calibration was never wired in.**
+`services/score_calculator.py`'s `DrowsinessScoreCalculator.calibrate_baseline()`
+existed and was unit-tested in isolation (`test_baseline_calibration_removes_seat_tilt_offset`)
+but `main.py`'s `run_real_video()` never called it. On `full-stream-facemp4.mp4`,
+raw head pitch stayed in `[-27.6°, -3.8°]` for the entire 184s — never crossing
+the hardcoded 0° baseline — so `_normalized_head_droop()` clamped to 0 for
+every single frame, capping the composite score at exactly **0.800**
+(`0.55 perclos + 0.25 eye_closed_now`) regardless of how closed the eyes got,
+one point below the 0.85 CRITICAL threshold. This is the same shape of false
+negative the original PnP-flip-ambiguity bug caused, from an unrelated root
+cause: a built, tested feature that was simply never connected to the
+production entrypoint. Any camera mount whose neutral pitch isn't ~0° would
+hit this.
+
+**Fix:** `run_real_video()` now averages the first `BASELINE_CALIBRATION_SECONDS`
+(1.0s) of pitch readings while a face is present and calls `calc.calibrate_baseline()`
+once that window elapses — matching the method's own docstring intent ("call
+it in the first few seconds while the driver sits upright"). Regression test
+added (`test_run_real_video_calibrates_baseline_from_first_second_of_pitch_readings`)
+reproducing the exact bug shape with a fake landmarker before implementing
+the fix (TDD: confirmed failing against the old code, passing after).
+
+**Verified after the fix, re-running all 5 videos:**
+
+| Video | Max score before fix | Max score after fix | CRITICAL fires? |
+|---|---|---|---|
+| normal.mp4 | 0.333 | 0.333 | No (unchanged, correct) |
+| drowsy.mp4 | 0.975 | 0.998 | Yes (unchanged, now slightly stronger signal) |
+| distracted.mp4 | 0.000 | 0.004 | No (unchanged, correct — negligible shift) |
+| full-stream-2.mp4 | 0.829 | 0.843 | No |
+| full-stream-facemp4.mp4 | **0.800 (hard ceiling)** | **0.923** | **Yes — CRITICAL at t=174.80s (0.874), RECOVERED at t=175.50s (0.496)** |
+
+No new false positives introduced (normal/distracted stay far below 0.85).
+Gate 1 re-checked clean on all 5 after the fix.
+
+**`full-stream-2.mp4` remains a known, already-scoped limitation, not a new
+regression.** Its labeled "STAGE 2: DROWSY" segment (t≈8-11.8s) stays at
+exactly 0.800 even after calibration — verified this is not a calibration
+gap: this clip's own resting pitch (~9.3°, from its first second) is
+*higher* than the peak pitch reached during that labeled segment (3.6°), so
+a correctly-computed relative droop there is ≤0, not a missing-signal case.
+The video's overall max moved from 0.829→0.843 because a *different*, later
+segment (~t=17.8-18.0s, part of the closing reprise) now gets a modest droop
+credit it didn't have before — it still never reaches CRITICAL. This is the
+formula-weight-sensitivity limitation already covered by the design spec's
+Gate 2 path (b) and this document's Phase-3-deferred stance, not something
+this fix was expected to resolve.
+
+This regression pass also partially closes the "no automated regression
+guard on the real end-to-end CV path" follow-up item above: the new fake-
+landmarker-based test at least exercises the calibration *logic* without a
+real video, though the 5-video Docker run itself remains a manual step, not
+CI-wired — that broader gap is still open.
