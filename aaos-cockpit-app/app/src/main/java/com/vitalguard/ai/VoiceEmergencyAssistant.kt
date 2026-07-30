@@ -56,6 +56,36 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         Log.i(TAG, "🗣️ Speaking Alert: '$alertText'")
     }
 
+    fun executeDistractionReminder() {
+        // Lighter than executeVoiceIntervention()'s _EXCLUSIVE request -- a brief
+        // distraction reminder shouldn't seize/mute all cabin audio the way a
+        // sustained drowsiness alert does. Placeholder wording/focus behavior,
+        // pending Tài's sign-off (design doc Decision 5) -- functional default,
+        // not a final UX decision.
+        val playbackAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+        val reminderFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(playbackAttributes)
+            .setAcceptsDelayedFocusGain(false)
+            .setOnAudioFocusChangeListener { focusChange ->
+                Log.d(TAG, "Distraction reminder audio focus state changed to: $focusChange")
+            }
+            .build()
+
+        val result = audioManager.requestAudioFocus(reminderFocusRequest)
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            focusRequest = reminderFocusRequest
+            val reminderText = "Please keep your eyes on the road and both hands on the wheel."
+            tts?.speak(reminderText, TextToSpeech.QUEUE_FLUSH, null, "DISTRACTION_REMINDER")
+            Log.i(TAG, "🗣️ Speaking distraction reminder: '$reminderText'")
+        } else {
+            Log.e(TAG, "❌ Distraction reminder audio focus request denied.")
+        }
+    }
+
     fun releaseFocus() {
         focusRequest?.let {
             audioManager.abandonAudioFocusRequest(it)

@@ -4,11 +4,13 @@ import android.content.Context
 
 interface VoiceAlertGateway {
     fun triggerAlert()
+    fun triggerDistractionReminder()
     fun stopAlert()
 }
 
 class FakeVoiceAlertGateway : VoiceAlertGateway {
     var alertTriggered: Boolean = false
+    var distractionReminderTriggered: Boolean = false
     var stopCalled: Boolean = false
     var throwOnTrigger: Boolean = false
     var throwOnStop: Boolean = false
@@ -16,6 +18,11 @@ class FakeVoiceAlertGateway : VoiceAlertGateway {
     override fun triggerAlert() {
         if (throwOnTrigger) throw IllegalStateException("simulated voice gateway failure")
         alertTriggered = true
+    }
+
+    override fun triggerDistractionReminder() {
+        if (throwOnTrigger) throw IllegalStateException("simulated voice gateway failure")
+        distractionReminderTriggered = true
     }
 
     override fun stopAlert() {
@@ -30,6 +37,10 @@ class RealVoiceAlertGateway(context: Context) : VoiceAlertGateway {
 
     override fun triggerAlert() {
         assistant.executeVoiceIntervention()
+    }
+
+    override fun triggerDistractionReminder() {
+        assistant.executeDistractionReminder()
     }
 
     override fun stopAlert() {
