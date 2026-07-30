@@ -41,6 +41,18 @@ RUN mkdir -p /app/models && \
     curl -fL -o /app/models/face_landmarker.task \
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 
+# hand_landmarker.task -- same rationale as face_landmarker.task above: baked
+# in at BUILD time only (never fetched at runtime), pinned to the numbered
+# path (float16/1/), NOT float16/latest/, for the same reproducibility
+# reason. Added for distraction detection (hands-off-wheel), consumed by
+# hand_tracker.py. Verified 2026-07-30: this exact numbered URL returns HTTP
+# 200, Content-Length 7819105 bytes (~7.46 MiB), identical ETag/MD5
+# (15318430ea3851670fe9914116a9cfad / FTGEMOo4UWcP6ZFBFqnPrQ==) to what
+# `latest` resolved to on the same day -- i.e. version 1 IS the artifact
+# `latest` currently points at.
+RUN curl -fL -o /app/models/hand_landmarker.task \
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

@@ -42,6 +42,12 @@
 # b0e7274907a1644404fef66b28dd6d85 / sOcnSQehZEQE/vZrKN1thQ==). Bumping to a
 # future face_landmarker v2, if MediaPipe ever publishes one, is a deliberate
 # edit to the Dockerfile URL, not something that happens on its own.
+#
+# mediapipe==0.10.14 covers both the Face Landmarker Tasks API
+# (output_facial_transformation_matrixes/output_face_blendshapes) and the
+# Hand Landmarker Tasks API (added for distraction detection) -- verified
+# both APIs import and construct successfully on this pinned version,
+# on both Windows dev and the Linux container.
 mediapipe==0.10.14
 numpy==2.5.1
 requests==2.32.5
