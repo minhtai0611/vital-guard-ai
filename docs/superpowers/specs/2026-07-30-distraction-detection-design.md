@@ -323,6 +323,7 @@ enum class AlertSource { DROWSINESS, DISTRACTION }
 
 class AlertArbiter(private val voiceAlertGateway: VoiceAlertGateway) {
     private var drowsinessCriticalActive = false
+    private var activeSpeaker: AlertSource? = null  // who is ACTUALLY sounding right now
 
     fun setDrowsinessCriticalActive(active: Boolean) { drowsinessCriticalActive = active }
 
@@ -331,12 +332,47 @@ class AlertArbiter(private val voiceAlertGateway: VoiceAlertGateway) {
             Log.i(TAG, "Suppressed distraction alert -- drowsiness CRITICAL has priority")
             return
         }
+        activeSpeaker = source
         voiceAlertGateway.triggerAlert(message)
     }
 
-    fun stopAlert(source: AlertSource) = voiceAlertGateway.stopAlert()
+    fun stopAlert(source: AlertSource) {
+        if (activeSpeaker != source) {
+            // A suppressed source was never actually sounding -- its stop request
+            // must not cut off whichever source IS legitimately active.
+            Log.i(TAG, "Ignored stopAlert from $source -- does not own the active alert (owner: $activeSpeaker)")
+            return
+        }
+        activeSpeaker = null
+        voiceAlertGateway.stopAlert()
+    }
 }
 ```
+
+**Ownership tracking is load-bearing, not incidental.** An earlier draft had
+`stopAlert(source)` call `voiceAlertGateway.stopAlert()` unconditionally,
+ignoring `source` entirely. Concrete failure this caused: drowsiness fires
+`CRITICAL` and is genuinely speaking (not suppressed); distraction also
+fires `CRITICAL` at the same time and is correctly suppressed (never
+actually spoke); distraction's score then drops below its exit threshold,
+and `DistractionController` calls `alertArbiter.stopAlert(DISTRACTION)` as
+part of its normal revert path — with the unconditional version, this
+silently cuts off the drowsiness alert that IS actively sounding, at
+exactly the moment it matters most. Tracking `activeSpeaker` (set only when
+a request actually reaches the real gateway, i.e. was not suppressed) fixes
+this: a `stopAlert()` call from a source that never owned the active alert
+is a no-op.
+
+Required tests, added specifically because the two arbitration tests below
+Decision 5's original test list do not exercise `stopAlert()`'s cross-source
+behavior at all (this is exactly the gap that let the bug above go
+unnoticed):
+- `test_stopAlert_from_suppressed_source_does_not_stop_active_alert_from_other_source`
+  — drowsiness requests and speaks; distraction requests while drowsiness
+  is active and is suppressed; distraction calls `stopAlert`; assert the
+  underlying gateway's `stopAlert()` was never invoked.
+- `test_stopAlert_from_owning_source_stops_its_own_alert_normally` — the
+  ordinary case, unaffected by the fix.
 
 **Why an arbiter is needed at all:** the real problem is not an
 `AudioFocus`-level OS race (the same app re-requesting its own focus doesn't
@@ -389,10 +425,18 @@ Required Kotlin tests:
 - `AlertArbiterTest.kt` — at minimum: (1) drowsiness `CRITICAL` +
   distraction `CRITICAL` simultaneously → only drowsiness's message is
   spoken, distraction's is logged as suppressed; (2) distraction `CRITICAL`
-  alone (no drowsiness active) → spoken normally, not blocked.
-- Existing `DrowsinessControllerTest.kt` cases must still pass unmodified
-  against the new `AlertArbiter`-based constructor (regression, not new
-  coverage).
+  alone (no drowsiness active) → spoken normally, not blocked; (3)
+  `test_stopAlert_from_suppressed_source_does_not_stop_active_alert_from_other_source`;
+  (4) `test_stopAlert_from_owning_source_stops_its_own_alert_normally` (see
+  the ownership-tracking note above — (3)/(4) exist specifically because
+  the original (1)/(2) pair never exercised `stopAlert()` and would not
+  have caught the cross-source-stop bug found during design review).
+- Existing `DrowsinessControllerTest.kt`: **assertions unchanged,
+  construction updated to the new signature** — the constructor changes
+  from taking `VoiceAlertGateway` to `AlertArbiter`, so every test's
+  setup/instantiation must pass a fake `AlertArbiter` instead; this is not
+  "zero lines touched," it's "the expected behavior each test asserts
+  stays identical, only the wiring to build the object under test changes."
 
 **Final UX policy needs Tài's sign-off.** The exact suppress-vs-queue
 behavior and the drop-vs-retry decision above are proposed defaults, not
@@ -513,3 +557,17 @@ had to fix once for the MobileNetV3 backbone claim.
 - Head pose as a gaze proxy will miss distraction that doesn't involve
   head movement (e.g., eyes-only glance at a phone in a fixed mount without
   turning the head) — not solvable with the current signal set.
+- **No active preemption if drowsiness turns `CRITICAL` while a distraction
+  alert is already mid-speech.** `AlertArbiter` only decides at the moment
+  `requestVoiceAlert()` is called — it does not proactively interrupt an
+  already-playing distraction message the instant drowsiness becomes
+  active. `requestVoiceAlert(DROWSINESS, ...)` will still be called and
+  will still update `activeSpeaker`/call the real gateway, so the *arbiter's
+  own bookkeeping* stays correct either way — but whether the driver
+  actually hears a clean handoff (distraction message cut off cleanly, not
+  garbled underneath drowsiness's) depends on the real `VoiceAlertGateway`
+  implementation's use of `AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE`, which is
+  expected to preempt on its own at the platform level. This is a
+  platform-behavior assumption, not something this design verifies or
+  implements itself — flagged here explicitly rather than left to look
+  handled.
