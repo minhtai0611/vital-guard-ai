@@ -28,6 +28,11 @@ class AlertArbiter(private val voiceAlertGateway: VoiceAlertGateway) {
             Log.i(TAG, "Suppressed distraction alert -- drowsiness CRITICAL has priority")
             return
         }
+        val outgoingOwner = activeSpeaker
+        if (outgoingOwner != null && outgoingOwner != source) {
+            Log.i(TAG, "Handing off active speaker from $outgoingOwner to $source -- stopping outgoing owner first")
+            voiceAlertGateway.stopAlert()
+        }
         activeSpeaker = source
         when (source) {
             AlertSource.DROWSINESS -> voiceAlertGateway.triggerAlert()

@@ -1,5 +1,6 @@
 package com.vitalguard.ai
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -50,5 +51,23 @@ class AlertArbiterTest {
         arbiter.stopAlert(AlertSource.DISTRACTION)
 
         assertTrue(voice.stopCalled)
+    }
+
+    @Test
+    fun `test_requestVoiceAlert_stops_the_previous_owner_before_switching_to_a_new_source`() {
+        // Distraction is speaking first (drowsiness not yet CRITICAL, so not suppressed).
+        arbiter.requestVoiceAlert(AlertSource.DISTRACTION)
+        assertTrue(voice.distractionReminderTriggered)
+        assertFalse(voice.stopCalled)  // no outgoing owner yet -- nothing to stop
+
+        // Drowsiness becomes CRITICAL and requests the alert while distraction still owns activeSpeaker.
+        arbiter.setDrowsinessCriticalActive(true)
+        arbiter.requestVoiceAlert(AlertSource.DROWSINESS)
+
+        // The handoff must stop the outgoing owner (distraction) before/as part of granting drowsiness.
+        assertTrue(voice.stopCalled)
+        assertTrue(voice.alertTriggered)
+        // stopAlert() must happen before triggerAlert() -- a clean handoff, not an overwrite.
+        assertEquals(listOf("triggerDistractionReminder", "stopAlert", "triggerAlert"), voice.callLog)
     }
 }
