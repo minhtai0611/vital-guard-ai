@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `PITCH_OFF_ROAD_THRESHOLD = 20.0`, `YAW_OFF_ROAD_THRESHOLD = 30.0` — separate from drowsiness's `max_droop_deg=25.0`; reasoned starting points, not scientifically validated, revisited against real footage at the acceptance gate (Task 12).
+- `PITCH_OFF_ROAD_THRESHOLD = 20.0`, `YAW_OFF_ROAD_THRESHOLD = 30.0` — separate from drowsiness's `max_droop_deg=25.0`; reasoned starting points, not scientifically validated, revisited against real footage at the acceptance gate (Task 17).
 - `head_off_road = abs(pitch_deg) > PITCH_OFF_ROAD_THRESHOLD or abs(yaw_deg) > YAW_OFF_ROAD_THRESHOLD`. The pitch used here is the SAME calibrated-baseline pitch drowsiness uses (`main.py`'s `BASELINE_CALIBRATION_SECONDS` window) — never a second independent baseline.
 - `is_gaze_off_road(head_off_road, eye_closed) = head_off_road and not eye_closed`, where `eye_closed` is `BlinkStateTracker.update()`'s already-debounced output — never a fresh raw `blink_score < BLINK_CLOSE_THRESHOLD` check.
 - `hands_visibility: "FULL"|"PARTIAL"|"UNKNOWN"` (2/1/0 hands detected). `hands_on_wheel` is `True` only when **all** currently-visible hands are inside the wheel region — a `PARTIAL` frame with its one visible hand outside the region is `False`, never optimistically `True`. `UNKNOWN` frames are excluded from `hands_off_wheel_ratio`'s denominator, never counted as "off wheel."
@@ -51,7 +51,7 @@
   curl -sI "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" | grep -i etag
   curl -sI "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task" | grep -i etag
   ```
-  Confirm both ETags match. Record the byte size too (`curl -sI ... | grep -i content-length`) — it will be used again in Task 12's container-startup sanity check.
+  Confirm both ETags match. Record the byte size too (`curl -sI ... | grep -i content-length`) — Step 3 below verifies it lands correctly inside the built image.
 - [ ] **Step 3:** Rebuild the image and confirm the file lands correctly:
   ```bash
   cd dms-ai-engine
