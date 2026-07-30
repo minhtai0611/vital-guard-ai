@@ -786,7 +786,7 @@
 
 **Verified before writing this task (not assumed from memory):** `run_real_video()`'s current full body is at `main.py:152-256` (read directly, current as of this plan). It already computes `pitch_deg` and calibrates `baseline_pitch_deg` via the `calibration_pitch_samples`/`baseline_calibrated` mechanism at lines 180, 222-228. Distraction's pitch-based off-road check must reuse the SAME `calc.baseline_pitch_deg` value (via `DrowsinessScoreCalculator`, which already stores it after `calibrate_baseline()` is called) — do not add a second calibration window.
 
-- [ ] **Step 1:** Write the failing test first — a fake `HandLandmarker` and an end-to-end assertion that the payload now carries a real `distraction` object. Add to `dms-ai-engine/tests/test_main.py`, near the existing `_fake_landmarker_with_face_detected` helper:
+- [ ] **Step 1:** Write the failing test first — a fake `HandLandmarker` and an end-to-end assertion that the payload now carries a real `distraction` object. Add to `dms-ai-engine/tests/test_main.py`, near the existing `_fake_landmarker_with_face_detected` helper. Note: `_fake_landmarker_with_time_varying_pitch(calibration_frames, calibration_pitch_deg, drooped_pitch_deg, blink_left=0.9, blink_right=0.85)` used by the test below already exists in this file (added for the baseline-calibration regression test) — reuse it as-is, do not redefine it:
   ```python
   def _fake_hand_landmarker_with_hands_at(*hand_centers):
       """hand_centers: list of (x, y) normalized centers, one per detected
@@ -812,17 +812,37 @@
       """Exercises the full distraction glue code end-to-end: yaw extraction,
       hand-region classification, is_gaze_off_road exclusion, composite score,
       trigger emitter -- none of this is touched by any has-face test written
-      before this task, so a regression here would go uncaught otherwise."""
+      before this task, so a regression here would go uncaught otherwise.
+
+      Uses the same time-varying-pitch fake already established for the
+      baseline-calibration regression test (`_fake_landmarker_with_time_varying_pitch`,
+      in this same file) rather than a constant pitch -- a constant pitch
+      would be fully cancelled out by calibration (baseline_pitch_deg would
+      converge to that same constant), making it silently impossible for
+      gaze_off_road to ever become True in this test. Enough frames are used
+      to run past the 1.0s calibration window (BASELINE_CALIBRATION_SECONDS)
+      AND fill distraction_calc's window with post-calibration frames --
+      without this, the fix for the calibration-window false-positive risk
+      (this task's Step 3) would leave distraction scoring silently
+      never-exercised for the whole test."""
       import cv2
       import main as main_module
       from services.hand_tracker import WHEEL_REGION
 
       frame = np.zeros((64, 64, 3), dtype=np.uint8)
-      frames = [frame] * 5
-      monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture(frames, fps=30.0))
+      fps = 30.0
+      calibration_frames = 30       # 1.0s at 30fps, matches BASELINE_CALIBRATION_SECONDS
+      post_calibration_frames = 40  # comfortably fills distraction_calc's window post-calibration
+      frames = [frame] * (calibration_frames + post_calibration_frames)
+      monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture(frames, fps=fps))
       monkeypatch.setattr(
           "services.face_landmarker_client.build_video_mode_landmarker",
-          lambda model_path: _fake_landmarker_with_face_detected(blink_left=0.1, blink_right=0.1, pitch_deg=45.0),
+          lambda model_path: _fake_landmarker_with_time_varying_pitch(
+              calibration_frames=calibration_frames,
+              calibration_pitch_deg=0.0,    # neutral baseline
+              drooped_pitch_deg=45.0,       # clearly past PITCH_OFF_ROAD_THRESHOLD=20.0 once calibrated
+              blink_left=0.1, blink_right=0.1,  # eyes open throughout -> is_gaze_off_road can be True
+          ),
       )
       wheel_cx = (WHEEL_REGION["x_min"] + WHEEL_REGION["x_max"]) / 2
       wheel_cy = (WHEEL_REGION["y_min"] + WHEEL_REGION["y_max"]) / 2
@@ -837,6 +857,14 @@
       rows = out_csv.read_text(encoding="utf-8").strip().splitlines()
       header = rows[0].split(",")
       assert "distraction_score" in header, f"CSV header missing distraction columns: {header}"
+
+      data_rows = rows[1:]
+      last_row = dict(zip(header, data_rows[-1].split(",")))
+      assert float(last_row["distraction_score"]) > 0.5, (
+          "gaze_off_road should be driving distraction_score up well after the "
+          f"calibration window elapsed, got {last_row['distraction_score']}"
+      )
+      assert last_row["distraction_state"] != "NORMAL"
   ```
 - [ ] **Step 2:** Run to verify failure:
   `pytest dms-ai-engine/tests/test_main.py::test_run_real_video_populates_distraction_payload_fields_end_to_end -v`
@@ -951,16 +979,34 @@
                       state = _state_for_score(score)
 
                       baseline_corrected_pitch = pitch_deg - calc.baseline_pitch_deg
-                      head_off_road = abs(baseline_corrected_pitch) > PITCH_OFF_ROAD_THRESHOLD or abs(yaw_deg) > YAW_OFF_ROAD_THRESHOLD
-                      gaze_off_road = is_gaze_off_road(head_off_road, eye_closed)
-                      distraction_score = distraction_calc.add_frame(DistractionFrameFeatures(
-                          timestamp=t, gaze_off_road=gaze_off_road,
-                          hands_visibility=hands_visibility, hands_on_wheel=on_wheel,
-                      ))
-                      distraction_signal = distraction_emitter.update(distraction_score, now=t)
-                      distraction_state = _state_for_score(
-                          distraction_score, enter_threshold=0.70, exit_threshold=0.40,
-                      )
+                      if baseline_calibrated:
+                          # Do NOT feed distraction_calc during the ~1s
+                          # calibration window -- calc.baseline_pitch_deg is
+                          # still its 0.0 default until baseline_calibrated
+                          # flips True, so baseline_corrected_pitch would be
+                          # raw/uncalibrated pitch here. Scoring on that
+                          # reproduces the exact false-positive/false-ceiling
+                          # bug class already found and fixed for drowsiness's
+                          # own score (see CV_REMEDIATION_RESULTS.md) -- on a
+                          # camera whose neutral pitch isn't ~0deg, the first
+                          # second of every video could spuriously read as
+                          # head_off_road=True. Skip scoring entirely rather
+                          # than score on a known-wrong baseline.
+                          head_off_road = abs(baseline_corrected_pitch) > PITCH_OFF_ROAD_THRESHOLD or abs(yaw_deg) > YAW_OFF_ROAD_THRESHOLD
+                          gaze_off_road = is_gaze_off_road(head_off_road, eye_closed)
+                          distraction_score = distraction_calc.add_frame(DistractionFrameFeatures(
+                              timestamp=t, gaze_off_road=gaze_off_road,
+                              hands_visibility=hands_visibility, hands_on_wheel=on_wheel,
+                          ))
+                          distraction_signal = distraction_emitter.update(distraction_score, now=t)
+                          # Verified against the real current source (main.py:67)
+                          # before writing this call: _state_for_score(score,
+                          # enter_threshold=0.85, exit_threshold=0.50) already
+                          # accepts custom threshold kwargs with those defaults
+                          # -- this override is not a guess.
+                          distraction_state = _state_for_score(
+                              distraction_score, enter_threshold=0.70, exit_threshold=0.40,
+                          )
 
                       if signal in ("CRITICAL", "RECOVERED") or distraction_signal in ("CRITICAL", "RECOVERED"):
                           event_counter += 1
@@ -1642,10 +1688,19 @@ confirmed.
           voice.throwOnTrigger = true
 
           controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
+          // no crash reaching this line is itself part of what's being verified.
+          // latched is set to true BEFORE the try block in handleCritical(), so
+          // it stays true even though the call inside it threw.
 
-          // no crash reaching this line is itself part of what's being verified
+          // A second call with the SAME correlationId would be blocked by
+          // onPayload()'s own correlationId dedupe before ever reaching
+          // handleCritical() again -- that would make this test pass without
+          // ever actually exercising the `if (latched) return` retry-prevention
+          // logic it claims to test. Use a DIFFERENT correlationId so this call
+          // genuinely reaches handleCritical() and is blocked by latched, not
+          // by the unrelated dedupe check.
           voice.throwOnTrigger = false
-          controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
+          controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0002"))
           assertFalse(voice.distractionReminderTriggered)
       }
   }
@@ -1974,7 +2029,9 @@ confirmed.
   done
   ```
   Expected: zero `JUMP` lines on all 5 videos. Any `SKIPPED` line is informational only. Then visually cross-check yaw sign/direction on 2-3 frames of `distracted.mp4` (same procedure as Task 2 Step 7).
-- [ ] **Step 4: Gate 2 — behavioral correctness per segment.** Segment boundaries per `CV_REMEDIATION_RESULTS.md`'s empirical findings for `full-stream-2.mp4`: Normal ~2-7.9s, "STAGE 2: DROWSY" ~8-11.8s, "STAGE 3: DISTRACTED" ~12-15.9s, closing reprise ~16.3-19.27s. Check `distraction_state`/`distraction_signal` (columns 12/13) against each expectation:
+- [ ] **Step 4: Gate 2 — behavioral correctness per segment.** Segment boundaries per `CV_REMEDIATION_RESULTS.md`'s empirical findings for `full-stream-2.mp4`: Normal ~2-7.9s, "STAGE 2: DROWSY" ~8-11.8s, "STAGE 3: DISTRACTED" ~12-15.9s, closing reprise ~16.3-19.27s.
+
+  **Negative checks (must never be `CRITICAL`) use `$12` (`distraction_state`), not `$13` (`distraction_signal`).** `distraction_signal` is `DistractionTriggerEmitter`'s edge-triggered output — it prints `"CRITICAL"` only on the single frame a episode *starts*, then `None` for every subsequent frame while that episode is still active (mirrors `TriggerEmitter`'s own `update()` shape). If a real `CRITICAL` episode began just before a restricted segment's boundary and stayed sustained across it, checking only `$13` would miss the overlap entirely, since the one edge-triggering frame could fall outside the scanned window while every frame *inside* the restricted window still correctly shows `distraction_state="CRITICAL"`. `distraction_state` (from `_state_for_score()`) reflects the current score-threshold state on every frame, so it's the correct column for "was this ever regarded as critical during this window," not just "did an episode start here." Positive checks (`distracted.mp4`, `full-stream-2.mp4`'s STAGE 3) still use `$13` — finding at least one edge-trigger event is exactly what "did it fire" means there.
   ```bash
   echo "=== distracted.mp4 max distraction_score (expect a CRITICAL signal somewhere) ==="
   awk -F',' 'NR>1 && $1+0>=0 {print $11}' out/evidence_distracted_distraction_gate.csv | sort -g | tail -1
@@ -1983,17 +2040,17 @@ confirmed.
   echo "=== full-stream-2.mp4 STAGE 3 (12-15.9s) -- expect CRITICAL ==="
   awk -F',' 'NR>1 && $1+0>=12.0 && $1+0<=15.9 {print $1","$11","$12","$13}' out/evidence_full-stream-2_distraction_gate.csv
 
-  echo "=== full-stream-2.mp4 STAGE 2 DROWSY (8-11.8s) -- expect NO CRITICAL ==="
-  awk -F',' 'NR>1 && $1+0>=8.0 && $1+0<=11.8 && $13=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_full-stream-2_distraction_gate.csv
+  echo "=== full-stream-2.mp4 STAGE 2 DROWSY (8-11.8s) -- expect NO CRITICAL (state, not just signal) ==="
+  awk -F',' 'NR>1 && $1+0>=8.0 && $1+0<=11.8 && $12=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_full-stream-2_distraction_gate.csv
 
-  echo "=== drowsy.mp4 and full-stream-facemp4.mp4 -- expect NO CRITICAL anywhere ==="
-  awk -F',' 'NR>1 && $13=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_drowsy_distraction_gate.csv
-  awk -F',' 'NR>1 && $13=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_full-stream-facemp4_distraction_gate.csv
+  echo "=== drowsy.mp4 and full-stream-facemp4.mp4 -- expect NO CRITICAL anywhere (state, not just signal) ==="
+  awk -F',' 'NR>1 && $12=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_drowsy_distraction_gate.csv
+  awk -F',' 'NR>1 && $12=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_full-stream-facemp4_distraction_gate.csv
 
-  echo "=== normal.mp4 -- expect NO CRITICAL anywhere ==="
-  awk -F',' 'NR>1 && $13=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_normal_distraction_gate.csv
+  echo "=== normal.mp4 -- expect NO CRITICAL anywhere (state, not just signal) ==="
+  awk -F',' 'NR>1 && $12=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evidence_normal_distraction_gate.csv
   ```
-  If a positive case (`distracted.mp4`, `full-stream-2.mp4`'s STAGE 3) doesn't cross `CRITICAL` but the underlying signals are physically plausible (Gate 1 passed, yaw/pitch values look real), treat this as path-(b) progress per the design doc's framing — hand off threshold/weight tuning as follow-up work, do not reopen Tasks 1-9 to chase it. If a negative case falsely fires, that IS a real failure — investigate the specific frame's `yaw_deg`/`hands_on_wheel` values before concluding it's a threshold issue vs. a real logic bug.
+  If a positive case (`distracted.mp4`, `full-stream-2.mp4`'s STAGE 3) doesn't cross `CRITICAL` but the underlying signals are physically plausible (Gate 1 passed, yaw/pitch values look real), treat this as path-(b) progress per the design doc's framing — hand off threshold/weight tuning as follow-up work, do not reopen Tasks 1-9 to chase it. If a negative case falsely fires, that IS a real failure — investigate the specific frame's `yaw_deg`/`hands_on_wheel` values before concluding it's a threshold issue vs. a real logic bug. Note that these negative checks scanning `$12` across each entire file also cover the calibration-window false-positive risk fixed in Task 7 Step 3 (t<1.0s of every video) — no separate dedicated check for that window is needed.
 - [ ] **Step 5: Latency.** Run `measure_latency.py` (Task 9) across all 5 videos, mounted read-only into the container:
   ```bash
   MSYS_NO_PATHCONV=1 docker run --rm \
