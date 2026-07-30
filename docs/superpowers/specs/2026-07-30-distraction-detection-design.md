@@ -343,6 +343,25 @@ safely reading the same payload's single top-level `correlationId` is not a
 conflict (a namespace-per-concern scheme was considered and dropped as
 unnecessary surface area).
 
+**`VoiceAlertGateway` needs a second method, not a message parameter.** The
+actual interface (`VoiceAlertGateway.kt`) is `triggerAlert()` — no
+parameters; `RealVoiceAlertGateway` wraps `VoiceEmergencyAssistant.executeVoiceIntervention()`,
+which speaks a single hardcoded drowsiness-specific string via
+`AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE`. An earlier draft of this design
+assumed a `triggerAlert(message: String)` signature that does not exist.
+Corrected to match this codebase's existing style (an explicit, purpose-
+named method per gateway action — e.g. `applyDrowsinessOverride()`/
+`revertToBaseline()` on `ClimateActuatorGateway`, never a generic
+parameterized setter) rather than retrofitting a stringly-typed parameter:
+
+```kotlin
+interface VoiceAlertGateway {
+    fun triggerAlert()                // existing -- drowsiness's fixed intervention
+    fun triggerDistractionReminder()  // new -- distraction's separate, lighter message
+    fun stopAlert()
+}
+```
+
 ```kotlin
 enum class AlertSource { DROWSINESS, DISTRACTION }
 
@@ -352,13 +371,16 @@ class AlertArbiter(private val voiceAlertGateway: VoiceAlertGateway) {
 
     fun setDrowsinessCriticalActive(active: Boolean) { drowsinessCriticalActive = active }
 
-    fun requestVoiceAlert(source: AlertSource, message: String) {
+    fun requestVoiceAlert(source: AlertSource) {
         if (source == AlertSource.DISTRACTION && drowsinessCriticalActive) {
             Log.i(TAG, "Suppressed distraction alert -- drowsiness CRITICAL has priority")
             return
         }
         activeSpeaker = source
-        voiceAlertGateway.triggerAlert(message)
+        when (source) {
+            AlertSource.DROWSINESS -> voiceAlertGateway.triggerAlert()
+            AlertSource.DISTRACTION -> voiceAlertGateway.triggerDistractionReminder()
+        }
     }
 
     fun stopAlert(source: AlertSource) {
@@ -373,6 +395,14 @@ class AlertArbiter(private val voiceAlertGateway: VoiceAlertGateway) {
     }
 }
 ```
+
+`RealVoiceAlertGateway.triggerDistractionReminder()` needs a working
+default (not a stub/TODO — `VoiceEmergencyAssistant` gets a parallel
+`executeDistractionReminder()` with its own TTS string and a lighter
+`AUDIOFOCUS_GAIN_TRANSIENT` request, not `_EXCLUSIVE`, matching the
+"response nhẹ hơn" decision), but the exact wording/focus behavior is
+still one of the items pending Tài's sign-off noted below — implemented
+with a reasoned default, not left unbuilt.
 
 **Ownership tracking is load-bearing, not incidental.** An earlier draft had
 `stopAlert(source)` call `voiceAlertGateway.stopAlert()` unconditionally,
@@ -424,7 +454,7 @@ real added complexity, deferred until real usage shows it's needed.
 **Real cost, not free — this touches already-shipped code.**
 `DrowsinessController`'s constructor changes from taking `VoiceAlertGateway`
 directly to taking `AlertArbiter` (its `handleCritical()` now calls
-`alertArbiter.requestVoiceAlert(DROWSINESS, ...)` and
+`alertArbiter.requestVoiceAlert(AlertSource.DROWSINESS)` and
 `alertArbiter.setDrowsinessCriticalActive(true)`). This is a real,
 non-additive change to a component that already shipped through its own
 SDD review — not purely new surface area, and must be planned as a
@@ -556,6 +586,13 @@ had to fix once for the MobileNetV3 backbone claim.
   (Decision 4).
 - Modify: `aaos-cockpit-app/app/.../TriggerPayload.kt` — add
   `DistractionInfo`/`distraction` field.
+- Modify: `aaos-cockpit-app/app/.../VoiceAlertGateway.kt` — add
+  `triggerDistractionReminder()` to the interface and `FakeVoiceAlertGateway`
+  (new `distractionReminderTriggered: Boolean` flag, same pattern as
+  `alertTriggered`); add the real implementation to `RealVoiceAlertGateway`.
+- Modify: `aaos-cockpit-app/app/.../VoiceEmergencyAssistant.kt` — add
+  `executeDistractionReminder()` (own TTS string, `AUDIOFOCUS_GAIN_TRANSIENT`
+  not `_EXCLUSIVE`, mirroring `executeVoiceIntervention()`'s structure).
 - Create: `aaos-cockpit-app/app/.../AlertArbiter.kt`.
 - Modify: `aaos-cockpit-app/app/.../DrowsinessController.kt` — route voice
   calls through `AlertArbiter` (Decision 5).
@@ -643,7 +680,7 @@ had to fix once for the MobileNetV3 backbone claim.
   alert is already mid-speech.** `AlertArbiter` only decides at the moment
   `requestVoiceAlert()` is called — it does not proactively interrupt an
   already-playing distraction message the instant drowsiness becomes
-  active. `requestVoiceAlert(DROWSINESS, ...)` will still be called and
+  active. `requestVoiceAlert(AlertSource.DROWSINESS)` will still be called and
   will still update `activeSpeaker`/call the real gateway, so the *arbiter's
   own bookkeeping* stays correct either way — but whether the driver
   actually hears a clean handoff (distraction message cut off cleanly, not
