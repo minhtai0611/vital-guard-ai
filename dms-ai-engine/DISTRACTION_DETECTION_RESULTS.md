@@ -293,6 +293,52 @@ awk -F',' 'NR>1 && $12=="CRITICAL" {print "UNEXPECTED CRITICAL: " $0}' out/evide
 Output: **empty.** PASS — zero unexpected `CRITICAL` rows across all 78
 data rows.
 
+### 4g. Production signal check — `distraction_signal` (column 13) across all 5 evidence CSVs
+
+```bash
+for f in normal drowsy distracted full-stream-2 full-stream-facemp4; do
+  echo "=== $f ==="
+  awk -F',' 'NR>1 && $13!="" {print}' out/evidence_${f}_distraction_gate.csv | wc -l
+done
+```
+
+Output: **0 non-empty rows in every single one of the 5 CSVs.** All of Gate
+2's checks above (4a-4f) read `distraction_state` (column 12,
+score-thresholded NORMAL/WARNING/CRITICAL) — but the actual production
+signal is `distraction_signal` (column 13), the one
+`DistractionTriggerEmitter` edge-triggers on and the one that gates
+`build_trigger_payload()` in `main.py` (i.e. the only column that would
+really drive an alert in the Android app). That column never fires once
+across the entire acceptance corpus, including during
+`full-stream-facemp4.mp4`'s genuine, visually-confirmed head-turn (4e).
+
+**Root cause for the closest near-miss, `full-stream-facemp4.mp4`:**
+
+```bash
+awk -F',' 'NR>1 && $1+0>=5.0 && $1+0<=7.5 {print $1","$11","$12","$13}' out/evidence_full-stream-facemp4_distraction_gate.csv
+```
+
+`distraction_score` (column 11) is `>=0.70` — `DistractionTriggerEmitter`'s
+`enter_threshold` (`services/distraction_trigger_emitter.py:21`) — from
+**t=5.65s to t=7.12s inclusive**, a sustained duration of exactly **1.47s**.
+`DistractionTriggerEmitter`'s `sustain_seconds=1.5`
+(`services/distraction_trigger_emitter.py:21`) requires the score to stay
+above threshold for 1.5s before it latches and emits a signal. 1.47s is
+**0.03s short** of that bar, so `_above_since` never accumulates enough
+duration and `sustained` (line 37) never evaluates `True` — the emitter
+correctly declines to fire, exactly as designed. This is a genuine
+near-miss on the sustain window for this specific real-world clip's
+excursion length, **not a logic bug** in the emitter.
+
+**Conclusion: not a Tasks 1-9 reopen.** The emitter is behaving exactly per
+its own hysteresis/sustain contract (the same kind of debounce mandated for
+the drowsiness FSM); the corpus simply doesn't contain an off-road episode
+that clears 1.5s. Follow-up (deferred, not a blocker): either shorten
+`sustain_seconds` for the distraction path, or record/capture a positive
+clip whose off-road excursion comfortably exceeds 1.5s, so the production
+`distraction_signal` path itself (not just the score/state columns) gets
+exercised at least once before relying on it for a live demo.
+
 ### Gate 2 summary
 
 | Video / segment | Check type | Result | Path |
@@ -401,7 +447,7 @@ nothing regressed across all 17 tasks of this plan.
 | Downscale decision | **Not triggered** | latency already well under budget |
 | Full test suite (Step 7) | **PASS** | 83/83 passed, 0 regressions |
 
-No code changes were made by this task. Three concrete, non-blocking
+No code changes were made by this task. Four concrete, non-blocking
 follow-up items were identified for future work (none reopen Tasks 1-9):
 
 1. `distracted.mp4`'s only off-road event falls entirely inside the 1.0s
@@ -416,3 +462,13 @@ follow-up items were identified for future work (none reopen Tasks 1-9):
    distraction — it contains a genuine, visually-confirmed off-road head
    turn at t≈5.65-7.12s. Anyone reusing this file for a future "expect no
    distraction CRITICAL" regression check should account for this window.
+4. The production `distraction_signal` (the column `DistractionTriggerEmitter`
+   actually edge-triggers on, and what gates `build_trigger_payload()` in
+   `main.py`) is empty across every row of all 5 evidence CSVs — the
+   end-to-end distraction alert never fires once in the acceptance corpus.
+   Closest near-miss: `full-stream-facemp4.mp4`'s t=5.65-7.12s CRITICAL
+   episode sustains `distraction_score>=0.70` for exactly 1.47s, 0.03s short
+   of `DistractionTriggerEmitter`'s `sustain_seconds=1.5`. Candidate for
+   `sustain_seconds` tuning and/or capturing a positive clip with a
+   comfortably-longer off-road excursion so the production signal path gets
+   exercised at least once.
