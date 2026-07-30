@@ -157,17 +157,100 @@ def _fake_landmarker_with_time_varying_pitch(calibration_frames, calibration_pit
     return _FakeLandmarker()
 
 
+def _fake_hand_landmarker_with_hands_at(*hand_centers):
+    """hand_centers: list of (x, y) normalized centers, one per detected
+    hand this frame (0-2 items). Fakes build_video_mode_hand_landmarker's
+    return value: a HandLandmarker whose detect_for_video() reports hands
+    at the given fixed positions every frame."""
+    hand_landmarks = [
+        [types.SimpleNamespace(x=cx, y=cy)] for cx, cy in hand_centers
+    ]
+    hand_result = types.SimpleNamespace(hand_landmarks=hand_landmarks)
+
+    class _FakeHandLandmarker:
+        def detect_for_video(self, mp_image, timestamp_ms):
+            return hand_result
+
+        def close(self):
+            pass
+
+    return _FakeHandLandmarker()
+
+
+def test_run_real_video_populates_distraction_payload_fields_end_to_end(tmp_path, monkeypatch):
+    """Exercises the full distraction glue code end-to-end: yaw extraction,
+    hand-region classification, is_gaze_off_road exclusion, composite score,
+    trigger emitter -- none of this is touched by any has-face test written
+    before this task, so a regression here would go uncaught otherwise.
+
+    Uses the same time-varying-pitch fake already established for the
+    baseline-calibration regression test (`_fake_landmarker_with_time_varying_pitch`,
+    in this same file) rather than a constant pitch -- a constant pitch
+    would be fully cancelled out by calibration (baseline_pitch_deg would
+    converge to that same constant), making it silently impossible for
+    gaze_off_road to ever become True in this test. Enough frames are used
+    to run past the 1.0s calibration window (BASELINE_CALIBRATION_SECONDS)
+    AND fill distraction_calc's window with post-calibration frames --
+    without this, the fix for the calibration-window false-positive risk
+    (this task's Step 3) would leave distraction scoring silently
+    never-exercised for the whole test."""
+    import cv2
+    import main as main_module
+    from services.hand_tracker import WHEEL_REGION
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    fps = 30.0
+    calibration_frames = 30       # 1.0s at 30fps, matches BASELINE_CALIBRATION_SECONDS
+    post_calibration_frames = 40  # comfortably fills distraction_calc's window post-calibration
+    frames = [frame] * (calibration_frames + post_calibration_frames)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture(frames, fps=fps))
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_time_varying_pitch(
+            calibration_frames=calibration_frames,
+            calibration_pitch_deg=0.0,    # neutral baseline
+            drooped_pitch_deg=45.0,       # clearly past PITCH_OFF_ROAD_THRESHOLD=20.0 once calibrated
+            blink_left=0.1, blink_right=0.1,  # eyes open throughout -> is_gaze_off_road can be True
+        ),
+    )
+    wheel_cx = (WHEEL_REGION["x_min"] + WHEEL_REGION["x_max"]) / 2
+    wheel_cy = (WHEEL_REGION["y_min"] + WHEEL_REGION["y_max"]) / 2
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at((wheel_cx, wheel_cy), (wheel_cx, wheel_cy)),
+    )
+
+    out_csv = tmp_path / "out.csv"
+    main_module.run_real_video("does-not-matter.mp4", out_csv, host="127.0.0.1", port=0)
+
+    rows = out_csv.read_text(encoding="utf-8").strip().splitlines()
+    header = rows[0].split(",")
+    assert "distraction_score" in header, f"CSV header missing distraction columns: {header}"
+
+    data_rows = rows[1:]
+    last_row = dict(zip(header, data_rows[-1].split(",")))
+    assert float(last_row["distraction_score"]) > 0.5, (
+        "gaze_off_road should be driving distraction_score up well after the "
+        f"calibration window elapsed, got {last_row['distraction_score']}"
+    )
+    assert last_row["distraction_state"] != "NORMAL"
+
+
 def test_build_trigger_payload_matches_schema():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     payload = build_trigger_payload(
         state="CRITICAL", score=0.91, confidence=1.0,
         perclos=0.8, eye_open_probability=0.1, head_euler_angle_x=28.0,
         reason="sustained_high_score", source="mock-stream", event_counter=1,
+        distraction_score=0.75, distraction_state="CRITICAL", yaw_deg=35.0, pitch_deg=5.0,
+        hands_visibility="PARTIAL", hands_on_wheel_flag=False, distraction_reason="gaze_off_road",
     )
     jsonschema.validate(payload, schema)
     assert payload["state"] == "CRITICAL"
     assert payload["correlationId"] == "vg-mock-stream-0001"
     assert payload["features"]["perclos"] == 0.8
+    assert payload["distraction"]["state"] == "CRITICAL"
+    assert payload["distraction"]["handsOnWheel"] is False
 
 
 def test_mock_run_produces_critical_then_recovered_then_serves_them(tmp_path, monkeypatch):
@@ -206,6 +289,10 @@ def test_run_real_video_raises_clear_error_when_video_cannot_be_opened(tmp_path,
         "services.face_landmarker_client.build_video_mode_landmarker",
         lambda model_path: _fake_landmarker_with_no_face_ever(),
     )
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at(),
+    )
 
     with pytest.raises(RuntimeError, match="[Cc]ould not open"):
         main_module.run_real_video("does-not-matter.mp4", tmp_path / "out.csv", host="127.0.0.1", port=0)
@@ -228,6 +315,10 @@ def test_run_real_video_falls_back_to_default_fps_when_reported_fps_is_invalid(t
     monkeypatch.setattr(
         "services.face_landmarker_client.build_video_mode_landmarker",
         lambda model_path: _fake_landmarker_with_no_face_ever(),
+    )
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at(),
     )
 
     out_csv = tmp_path / "out.csv"
@@ -255,6 +346,10 @@ def test_run_real_video_emits_unknown_after_sustained_lost_face(tmp_path, monkey
     monkeypatch.setattr(
         "services.face_landmarker_client.build_video_mode_landmarker",
         lambda model_path: _fake_landmarker_with_no_face_ever(),
+    )
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at(),
     )
 
     served = []
@@ -295,17 +390,25 @@ def test_run_real_video_processes_has_face_frames_end_to_end(tmp_path, monkeypat
         "services.face_landmarker_client.build_video_mode_landmarker",
         lambda model_path: _fake_landmarker_with_face_detected(blink_left=0.9, blink_right=0.85, pitch_deg=12.0),
     )
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at(),
+    )
 
     out_csv = tmp_path / "out.csv"
     main_module.run_real_video("does-not-matter.mp4", out_csv, host="127.0.0.1", port=0)
 
     rows = out_csv.read_text(encoding="utf-8").strip().splitlines()
     header, data_rows = rows[0], rows[1:]
-    assert header.split(",") == ["ts", "has_face", "blink_score", "head_pitch", "score", "state", "signal"]
+    assert header.split(",") == ["ts", "has_face", "blink_score", "head_pitch", "score", "state", "signal",
+                                  "yaw_deg", "hands_visibility", "hands_on_wheel", "distraction_score",
+                                  "distraction_state", "distraction_signal"]
     assert len(data_rows) == len(frames)
 
     for row in data_rows:
-        ts, has_face, blink_score_col, head_pitch, score, state, signal = row.split(",")
+        (ts, has_face, blink_score_col, head_pitch, score, state, signal,
+         yaw_deg, hands_visibility, on_wheel, distraction_score, distraction_state,
+         distraction_signal) = row.split(",")
         assert has_face == "1"
         # Non-empty and numeric -- confirms blink_score()/extract_pitch_deg()
         # actually ran on the fake's category/matrix data rather than the
@@ -346,6 +449,10 @@ def test_run_real_video_calibrates_baseline_from_first_second_of_pitch_readings(
             calibration_pitch_deg=-10.0,
             drooped_pitch_deg=-2.0,
         ),
+    )
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at(),
     )
 
     served = []
@@ -407,6 +514,10 @@ def test_run_real_video_stops_early_when_shutdown_requested(tmp_path, monkeypatc
     monkeypatch.setattr(
         "services.face_landmarker_client.build_video_mode_landmarker",
         lambda model_path: _fake_landmarker_with_no_face_ever(),
+    )
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at(),
     )
 
     main_module._shutdown_requested = True
