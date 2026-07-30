@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 
-from services.head_pose import rotation_matrix_to_euler_deg, extract_pitch_deg
+from services.head_pose import rotation_matrix_to_euler_deg, extract_pitch_deg, extract_yaw_deg
 
 
 def _rotation_matrix_x(angle_deg):
@@ -85,3 +85,21 @@ def test_combined_rotation_does_not_corrupt_pitch_extraction():
     assert abs(x - pitch_angle) < 0.01, f"expected pitch axis ~{pitch_angle}, got {x}"
     assert abs(y - other_angle) < 0.01, f"expected other axis ~{other_angle}, got {y}"
     assert abs(z) < 0.01, f"expected no leakage into the third (unrotated) axis, got {z}"
+
+
+def test_extract_yaw_deg_increases_with_the_chosen_axis_rotation():
+    angles = [-20.0, -10.0, 0.0, 10.0, 20.0, 30.0]
+    yaws = [extract_yaw_deg(_rotation_matrix_y(a)) for a in angles]
+    for earlier, later in zip(yaws, yaws[1:]):
+        assert later > earlier, f"yaw must be strictly increasing, got {yaws}"
+
+
+def test_extract_yaw_deg_is_insensitive_to_pitch_rotation():
+    """Mirrors test_extract_pitch_deg_is_insensitive_to_the_other_axes exactly
+    (same synthetic builder, same 2.5deg tolerance) -- a regression guard on
+    extract_yaw_deg() specifically, in case a future change accidentally
+    reads the wrong axis, even though the underlying single-axis math is
+    already covered by test_pure_x_rotation_recovers_known_angle."""
+    for angle in (-30.0, -15.0, 15.0, 30.0):
+        yaw = extract_yaw_deg(_rotation_matrix_x(angle))
+        assert abs(yaw) < 2.5, f"non-yaw axis rotation of {angle} deg leaked into yaw: got {yaw}"
