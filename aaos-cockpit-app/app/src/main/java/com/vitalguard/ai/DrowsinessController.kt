@@ -46,9 +46,11 @@ class DrowsinessController(
             climateGateway.applyDrowsinessOverride()
             voiceGateway.triggerAlert()
             lastGatewayAction = GatewayActionStatus.OVERRIDE_APPLIED
+            DebugOverlayState.instance.updateGatewayAction(lastGatewayAction.name)
         } catch (t: Throwable) {
             Log.e(TAG, "Gateway failure applying drowsiness override: ${t.message}")
             lastGatewayAction = GatewayActionStatus.OVERRIDE_FAILED
+            DebugOverlayState.instance.updateGatewayAction(lastGatewayAction.name)
             // no retry: GATEWAY_MODE is the intended recovery path for a broken Real gateway
         }
     }
@@ -64,9 +66,11 @@ class DrowsinessController(
             climateGateway.revertToBaseline()
             voiceGateway.stopAlert()
             lastGatewayAction = GatewayActionStatus.REVERTED
+            DebugOverlayState.instance.updateGatewayAction(lastGatewayAction.name)
         } catch (t: Throwable) {
             Log.e(TAG, "Gateway failure reverting to baseline: ${t.message}")
             lastGatewayAction = GatewayActionStatus.REVERT_FAILED
+            DebugOverlayState.instance.updateGatewayAction(lastGatewayAction.name)
         }
     }
 }

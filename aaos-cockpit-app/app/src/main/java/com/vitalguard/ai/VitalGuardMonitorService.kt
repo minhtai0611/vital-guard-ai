@@ -52,8 +52,14 @@ class VitalGuardMonitorService : Service() {
         pollClient = TriggerPollClient(
             fetcher = HttpTriggerFetcher(CONTAINER_NODE_BASE_URL),
             scope = serviceScope,
-            onPayload = { payload -> controller.onPayload(payload) },
-            onConnectionLost = { controller.onConnectionLost() },
+            onPayload = { payload ->
+                DebugOverlayState.instance.updateFromPayload(payload)
+                controller.onPayload(payload)
+            },
+            onConnectionLost = {
+                DebugOverlayState.instance.markConnectionLost()
+                controller.onConnectionLost()
+            },
         )
         pollClient.start()
     }

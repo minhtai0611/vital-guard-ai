@@ -4,6 +4,7 @@ import android.car.Car
 import android.car.VehiclePropertyIds
 import android.car.hardware.property.CarPropertyManager
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 
 interface ClimateActuatorGateway {
@@ -100,5 +101,20 @@ class RealClimateActuatorGateway(private val context: Context) : ClimateActuator
                 Log.w(TAG, "Failed to set property 0x${propertyId.toString(16)} for area 0x${area.toString(16)}: ${t.message}")
             }
         }
+    }
+}
+
+/** Sends an internal Broadcast Intent to the bridge-service priv-app instead of
+ * calling CarPropertyManager directly — CLAUDE.md's Option C safety net. If the
+ * bridge apk is missing/crashed, this call still returns normally (fire-and-forget
+ * broadcast); it does not throw, so it cannot itself trip the controller's
+ * OVERRIDE_FAILED path — bridge health must be verified separately via logcat. */
+class BridgeClimateActuatorGateway(private val context: Context) : ClimateActuatorGateway {
+    override fun applyDrowsinessOverride() {
+        context.sendBroadcast(Intent("com.vitalguard.ai.bridge.APPLY_HVAC_OVERRIDE"))
+    }
+
+    override fun revertToBaseline() {
+        context.sendBroadcast(Intent("com.vitalguard.ai.bridge.REVERT_HVAC_BASELINE"))
     }
 }

@@ -4,6 +4,7 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:gravity="center"
+    android:padding="24dp"
     android:background="#101418">
 
     <TextView
@@ -13,5 +14,45 @@
         android:text="@string/cockpit_status_normal"
         android:textColor="#FFFFFF"
         android:textSize="28sp" />
+
+    <!-- Mandatory debug overlay (root CLAUDE.md "Debug Overlay" section) —
+         surfaces perclos/eyeOpenProbability/headEulerAngleX/receivingTrigger/
+         lastGatewayAction live so the model/FSM/gateway layers can be told
+         apart without reading logcat. -->
+    <TextView
+        android:id="@+id/overlayPerclos"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#B0B8C0"
+        android:textSize="16sp"
+        android:layout_marginTop="16dp" />
+
+    <TextView
+        android:id="@+id/overlayEyeOpen"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#B0B8C0"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/overlayHeadPitch"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#B0B8C0"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/overlayReceiving"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#B0B8C0"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/overlayGatewayAction"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#B0B8C0"
+        android:textSize="16sp" />
 
 </LinearLayout>
