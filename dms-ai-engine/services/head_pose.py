@@ -38,6 +38,12 @@ The reverse direction was quantified too: during drowsy.mp4's droop window
 (t=0.6-2.2s), yaw (y) stayed within a -11.91 to -0.83 deg band while pitch
 (x) swung from -4.97 to 21.82 -- i.e. yaw is not grossly contaminated by a
 real head-droop motion either.
+
+Yaw sign convention was visually cross-checked against distracted.mp4's
+frames: t=0.07s y=+23.89 (near-frontal, oriented screen-right), t=0.80s
+y=-40.69 (clear profile turn, oriented screen-left), t=1.30s y=+1.79
+(back to frontal) -- sign is consistent: positive yaw = screen-right
+orientation, negative yaw = screen-left.
 """
 import math
 from typing import Tuple
