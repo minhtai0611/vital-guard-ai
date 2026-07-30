@@ -9,13 +9,15 @@ import org.junit.Test
 class DrowsinessControllerTest {
     private lateinit var climate: FakeClimateActuatorGateway
     private lateinit var voice: FakeVoiceAlertGateway
+    private lateinit var arbiter: AlertArbiter
     private lateinit var controller: DrowsinessController
 
     @Before
     fun setUp() {
         climate = FakeClimateActuatorGateway()
         voice = FakeVoiceAlertGateway()
-        controller = DrowsinessController(climate, voice)
+        arbiter = AlertArbiter(voice)
+        controller = DrowsinessController(climate, arbiter)
     }
 
     private fun payload(state: String, correlationId: String) = TriggerPayload(

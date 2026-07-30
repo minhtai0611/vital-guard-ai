@@ -10,7 +10,7 @@ import android.util.Log
  */
 class DrowsinessController(
     private val climateGateway: ClimateActuatorGateway,
-    private val voiceGateway: VoiceAlertGateway
+    private val alertArbiter: AlertArbiter
 ) {
     enum class GatewayActionStatus { NONE, OVERRIDE_APPLIED, OVERRIDE_FAILED, REVERTED, REVERT_FAILED }
 
@@ -44,7 +44,8 @@ class DrowsinessController(
         latched = true
         try {
             climateGateway.applyDrowsinessOverride()
-            voiceGateway.triggerAlert()
+            alertArbiter.setDrowsinessCriticalActive(true)
+            alertArbiter.requestVoiceAlert(AlertSource.DROWSINESS)
             lastGatewayAction = GatewayActionStatus.OVERRIDE_APPLIED
         } catch (t: Throwable) {
             Log.e(TAG, "Gateway failure applying drowsiness override: ${t.message}")
@@ -62,7 +63,8 @@ class DrowsinessController(
         latched = false
         try {
             climateGateway.revertToBaseline()
-            voiceGateway.stopAlert()
+            alertArbiter.setDrowsinessCriticalActive(false)
+            alertArbiter.stopAlert(AlertSource.DROWSINESS)
             lastGatewayAction = GatewayActionStatus.REVERTED
         } catch (t: Throwable) {
             Log.e(TAG, "Gateway failure reverting to baseline: ${t.message}")
