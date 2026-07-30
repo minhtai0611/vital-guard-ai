@@ -286,10 +286,19 @@ suppressed as long). All four numbers are starting points, explicitly
 unvalidated, revisited at the acceptance gate.
 
 Required tests in `services/distraction_trigger_emitter.py`'s test file:
-mirror all 8 of `TriggerEmitter`'s existing test cases (debounce, hysteresis,
-no-duplicate-while-above, rearm-after-exit, critical/recovered string
-returns, none-when-not-firing) against `DistractionTriggerEmitter`'s own
-numbers.
+mirror all 10 of `TriggerEmitter`'s existing test cases from
+`tests/test_dms.py` (counted directly from the file, not estimated):
+`test_no_trigger_before_sustain_window_elapses`,
+`test_trigger_fires_once_after_sustain`,
+`test_no_duplicate_trigger_while_still_above_threshold`,
+`test_trigger_rearms_after_dropping_below_exit_threshold`,
+`test_hysteresis_prevents_flicker_around_0_85`,
+`test_short_dip_below_enter_but_above_exit_resets_sustain_timer`,
+`test_update_returns_critical_string_on_fire`,
+`test_update_returns_none_when_not_firing`,
+`test_recovered_fires_once_on_down_edge_after_critical`,
+`test_recovered_does_not_fire_without_a_prior_critical` — against
+`DistractionTriggerEmitter`'s own numbers.
 
 **State mapping:** `distraction.state` uses the same `NORMAL|WARNING|CRITICAL`
 pattern as `_state_for_score()`. Only `CRITICAL` triggers a gateway action
