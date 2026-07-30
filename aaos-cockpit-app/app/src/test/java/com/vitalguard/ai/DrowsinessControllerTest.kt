@@ -25,6 +25,10 @@ class DrowsinessControllerTest {
         state = state,
         features = TriggerFeatures(perclos = 0.8f, eyeOpenProbability = 0.1f, headEulerAngleX = 28.0f),
         reason = "test", correlationId = correlationId,
+        distraction = DistractionInfo(
+            score = 0.0f, state = TriggerPayload.STATE_NORMAL, yawDeg = 0.0f, pitchDeg = 0.0f,
+            handsVisibility = DistractionInfo.VISIBILITY_UNKNOWN, handsOnWheel = false, reason = "test"
+        ),
     )
 
     @Test
