@@ -398,19 +398,53 @@ real added complexity, deferred until real usage shows it's needed.
 
 **Real cost, not free — this touches already-shipped code.**
 `DrowsinessController`'s constructor changes from taking `VoiceAlertGateway`
-directly to taking `AlertArbiter` (its `handleCritical()`/`revertToBaseline()`
-now call `alertArbiter.requestVoiceAlert(DROWSINESS, ...)` /
-`alertArbiter.setDrowsinessCriticalActive(...)` /
-`alertArbiter.stopAlert(DROWSINESS)` instead of calling `voiceGateway`
-directly). This is a real, non-additive change to a component that already
-shipped through its own SDD review — not purely new surface area, and must
-be planned as a modification task with its own regression check (existing
+directly to taking `AlertArbiter` (its `handleCritical()` now calls
+`alertArbiter.requestVoiceAlert(DROWSINESS, ...)` and
+`alertArbiter.setDrowsinessCriticalActive(true)`). This is a real,
+non-additive change to a component that already shipped through its own
+SDD review — not purely new surface area, and must be planned as a
+modification task with its own regression check (existing
 `DrowsinessControllerTest.kt` cases must still pass unchanged).
 
+**`setDrowsinessCriticalActive(false)` must live inside `revertToBaseline()`
+specifically — not duplicated separately in each caller.** The current,
+already-shipped `DrowsinessController.onConnectionLost()` calls
+`revertToBaseline()` directly (confirmed by reading the actual source, not
+assumed) — it is not a second, independent exit path that happens to also
+revert; it *is* the same shared function `handleNonCritical()` already
+calls. So placing `alertArbiter.stopAlert(DROWSINESS)` and
+`alertArbiter.setDrowsinessCriticalActive(false)` inside
+`revertToBaseline()` itself (rather than inside `handleNonCritical()`
+separately) covers both the ordinary score-drops-below-exit-threshold path
+*and* the connection-lost fallback path by construction, with no risk of
+one being updated and the other forgotten. An implementer restructuring
+this must preserve that invariant, not just "make the tests pass" — which
+is why a dedicated test locks in the specific scenario, not just the
+general behavior:
+- `test_drowsiness_connection_lost_while_critical_clears_the_arbiter_flag`
+  — get `DrowsinessController` into `CRITICAL` (arbiter's
+  `drowsinessCriticalActive=true`), call `onConnectionLost()`, then assert
+  a subsequent `distractionController`-side `CRITICAL` is no longer
+  suppressed (i.e. the flag was actually cleared, not just that
+  `climateGateway.revertToBaseline()` was called).
+
 `DistractionController` mirrors `DrowsinessController`'s shape (idempotency
-via `latched` + `lastCorrelationId`, `onConnectionLost()` fallback that
-reverts/stops on a dropped connection) but only depends on `AlertArbiter` —
+via `latched` + `lastCorrelationId`) but only depends on `AlertArbiter` —
 no `ClimateActuatorGateway` (confirmed: distraction never touches HVAC).
+**No separate heartbeat/timeout concept for distraction, and none needed.**
+An earlier draft proposed a `heartbeatTimeoutMs` constructor parameter on
+`DistractionController`, reasoning it should be shorter than drowsiness's
+(matching the pattern of every other distraction timing constant being
+intentionally shorter). Checked against the actual code
+(`TriggerPollClient.kt`): connection-loss detection is owned entirely by a
+single `TriggerPollClient` instance (`failureThreshold=3` consecutive
+failures at `pollIntervalMs=500L` ≈ 1.5s to detect), which invokes one
+shared `onConnectionLost` callback. There is no per-controller heartbeat
+timer in the real architecture to begin with — `DrowsinessController` never
+owned one either. Both controllers' `onConnectionLost()` fire from the same
+single detection event; there is nothing to pick a distraction-specific
+number for. (This resolves the apparent inconsistency by removing the
+false premise, not by choosing a "consistent" number.)
 
 **Wiring:** wherever `TriggerPollClient`'s success/failure callbacks
 currently invoke `drowsinessController.onPayload(payload)` /
@@ -515,15 +549,25 @@ had to fix once for the MobileNetV3 backbone claim.
   comparing across it; do not reuse the original naive adjacent-row
   version). Visual cross-check of yaw sign/direction on 2-3 frames of
   `distracted.mp4`.
-- **Gate 2 (behavioral correctness on real footage):** distraction fires
-  `CRITICAL` during `distracted.mp4`'s head-turn; distraction does **not**
-  fire during `drowsy.mp4`'s and `full-stream-facemp4.mp4`'s real drowsy
-  segments (the reverse of the synthetic confound tests, checked against
-  real footage, not just fakes). Neither Gate result is treated as final —
-  same path-(a)/path-(b) framing as the CV remediation plan: physically
-  plausible-but-under-threshold is progress, not failure, and routes to a
-  documented threshold-tuning follow-up rather than reopening this plan's
-  tasks.
+- **Gate 2 (behavioral correctness on real footage):** checked per-video,
+  including per-segment for the two long multi-state clips (segment
+  boundaries per `CV_REMEDIATION_RESULTS.md`'s empirical findings for
+  `full-stream-2.mp4`: Normal ~2-7.9s, "STAGE 2: DROWSY" ~8-11.8s, "STAGE 3:
+  DISTRACTED" ~12-15.9s, closing reprise ~16.3-19.27s):
+  - **Positive (must fire `CRITICAL`):** `distracted.mp4` (its head-turn);
+    `full-stream-2.mp4`'s "STAGE 3: DISTRACTED" segment (~12-15.9s) — this
+    is real ground-truth for the feature itself, not just a confound check,
+    and was missed in an earlier draft of this gate.
+  - **Negative (must NOT fire `CRITICAL` — the confound check on real
+    footage, not just synthetic):** `normal.mp4`; `drowsy.mp4`'s and
+    `full-stream-facemp4.mp4`'s real drowsy segments; `full-stream-2.mp4`'s
+    "STAGE 2: DROWSY" segment (~8-11.8s) specifically (the same clip that
+    also has a real positive segment — both must hold in the same video);
+    `full-stream-2.mp4`'s Normal and closing-reprise segments.
+  Neither result is treated as final — same path-(a)/path-(b) framing as
+  the CV remediation plan: physically plausible-but-under-threshold is
+  progress, not failure, and routes to a documented threshold-tuning
+  follow-up rather than reopening this plan's tasks.
 - **Latency:** COMBINED p95 (drowsiness + distraction, both models, across
   all 5 videos) measured inside the real container, ≤150ms budget, with
   the downscale-then-re-Gate-1 contingency if exceeded.
