@@ -234,12 +234,37 @@ class DistractionScoreCalculator:
         return W_GAZE * gaze_off_road_ratio + W_HANDS * hands_off_wheel_ratio
 ```
 
-`W_GAZE=0.65`, `W_HANDS=0.35` — a fresh, reasoned starting point (gaze is
-the more direct signal, hands is supporting), **explicitly not copied from**
+`W_GAZE=0.80`, `W_HANDS=0.20` — a fresh, reasoned starting point (gaze is
+the more direct, more dangerous signal — looking away from the road while
+still holding the wheel is worse than briefly one-handing the wheel while
+still watching the road — and it's the only sub-signal with real verifiable
+ground truth right now, see below), **explicitly not copied from**
 drowsiness's `0.55/0.25/0.20` weights, and explicitly unvalidated — same
 documented stance the project already takes on those numbers. Revisited
 against real footage at the acceptance gate, same as `BLINK_CLOSE_THRESHOLD`
 was.
+
+**This split was corrected during design review — an earlier `0.65/0.35`
+draft made Gate 2's positive case mathematically impossible.** The only
+real video exercising this feature's positive case, `distracted.mp4`, has
+hands on the wheel throughout (confirmed in "Camera framing confirmed"
+above) — so `hands_off_wheel_ratio ≈ 0` for that entire clip. With the
+`0.65/0.35` split, even a perfect `gaze_off_road_ratio = 1.0` caps the score
+at `0.65 * 1.0 + 0.35 * 0 = 0.65`, strictly below any `enter_threshold` at
+or above `0.65` — this is a hard ceiling from the arithmetic itself, not a
+"maybe the threshold needs tuning" situation, and would have misdirected
+debugging toward the yaw axis or threshold value instead of the actual
+cause. With `0.80/0.20`, gaze alone at `ratio=1.0` reaches `0.80`, clearing
+`enter_threshold=0.70` with margin (still clears at `ratio=0.875`, giving
+headroom for real, imperfect footage). The tradeoff, disclosed rather than
+hidden: hands-off-wheel alone, even sustained at `ratio=1.0`, only
+contributes `0.20` — on its own it cannot reach `CRITICAL` (mirroring how
+drowsiness's own `head_droop_norm` term alone, at `0.20` weight, cannot
+reach `CRITICAL` either without `perclos`/`eye_closed_now` contributing
+too). Hands-off-wheel is a supporting/amplifying signal in this iteration,
+not an independently sufficient one — revisit this split once real footage
+combining sustained hands-off-wheel *without* gaze-off-road exists to test
+against (none currently does).
 
 `services/distraction_trigger_emitter.py` (new file, **not** a reuse of
 `TriggerEmitter` — distraction's sustain/cooldown reasoning is genuinely
@@ -426,7 +451,14 @@ general behavior:
   `drowsinessCriticalActive=true`), call `onConnectionLost()`, then assert
   a subsequent `distractionController`-side `CRITICAL` is no longer
   suppressed (i.e. the flag was actually cleared, not just that
-  `climateGateway.revertToBaseline()` was called).
+  `climateGateway.revertToBaseline()` was called). This exercises real
+  `DrowsinessController` + real `AlertArbiter` + real `DistractionController`
+  together (only the underlying `VoiceAlertGateway`/`ClimateActuatorGateway`
+  are faked) — it doesn't fit any of the three per-component test files
+  below (`DrowsinessControllerTest.kt` fakes the arbiter,
+  `AlertArbiterTest.kt` fakes the gateway, `DistractionControllerTest.kt`
+  tests distraction alone), so it gets its own file:
+  `AlertArbiterIntegrationTest.kt` (see File Structure).
 
 `DistractionController` mirrors `DrowsinessController`'s shape (idempotency
 via `latched` + `lastCorrelationId`) but only depends on `AlertArbiter` —
@@ -529,8 +561,14 @@ had to fix once for the MobileNetV3 backbone claim.
   calls through `AlertArbiter` (Decision 5).
 - Create: `aaos-cockpit-app/app/.../DistractionController.kt`.
 - Create matching Kotlin test files (`AlertArbiterTest.kt`,
-  `DistractionControllerTest.kt`); re-verify `DrowsinessControllerTest.kt`
-  passes unmodified against the new constructor.
+  `DistractionControllerTest.kt`); update `DrowsinessControllerTest.kt`'s
+  construction to the new `AlertArbiter`-based signature (assertions
+  unchanged).
+- Create: `AlertArbiterIntegrationTest.kt` — the one cross-component test
+  (`test_drowsiness_connection_lost_while_critical_clears_the_arbiter_flag`)
+  that needs real `DrowsinessController` + `AlertArbiter` +
+  `DistractionController` together, not a fit for any single-component
+  test file above.
 - Modify: whichever file wires `TriggerPollClient` callbacks to
   `DrowsinessController` — fan out to `DistractionController` too.
 - Modify: `docs/superpowers/plans/2026-07-28-cv-backend-remediation.md` —
