@@ -1,0 +1,38 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.vitalguard.ai.bridge"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.vitalguard.ai.bridge"
+        minSdk = 29
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+dependencies {
+    // Automotive Car API — ships inside the SDK platform itself, not published to Maven.
+    // Compile-only: the real implementation is provided by Car Service at runtime.
+    compileOnly files("${android.sdkDirectory}/platforms/android-${android.compileSdk}/optional/android.car.jar")
+}
