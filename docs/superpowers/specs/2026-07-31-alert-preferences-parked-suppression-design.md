@@ -386,6 +386,19 @@ nếu climate throw, voice không bao giờ được thử. Trước Vấn đề
 chi tiết code; giờ nó vi phạm trực tiếp safety invariant đã tuyên bố. Sửa —
 tách độc lập, cộng thêm check `climateEnabled`/`voiceEnabled` (thuộc Vấn đề 1):
 
+**Điểm mấu chốt, dễ sai nhất trong toàn bộ spec:** `alertArbiter.setDrowsinessCriticalActive()`
+là bookkeeping cho **ưu tiên giữa 2 nguồn cảnh báo** (drowsiness luôn thắng
+distraction) — hoàn toàn độc lập với việc tài xế có tắt riêng kênh voice của
+drowsiness hay không. **Không được** gate lời gọi này theo `voiceEnabled`.
+Nếu gate nhầm: tài xế tắt voice (giữ climate — hợp lệ theo `isSafe()`) rồi
+CRITICAL thật xảy ra → cờ ưu tiên không được set → distraction CRITICAL xảy
+ra đồng thời sẽ không bị suppress, vi phạm chính nguyên tắc `AlertArbiter`
+được tạo ra để đảm bảo. Ngược lại ở `revertToBaseline()`: nếu tài xế tắt
+voice **giữa chừng** lúc đang CRITICAL rồi score mới giảm, gate theo
+`voiceEnabled` sẽ khiến cờ không được clear — kẹt vĩnh viễn ở `true`, đúng
+kiểu lỗi "flag freeze" đã gặp ở `onConnectionLost()` trước đây. Viết tường
+minh cả hai hàm, không để "cùng pattern áp dụng" ngầm hiểu:
+
 ```kotlin
 class DrowsinessController(
     private val climateGateway: ClimateActuatorGateway,
@@ -397,6 +410,7 @@ class DrowsinessController(
         if (latched) return
         if (isParked) { Log.i(TAG, "Suppressed: vehicle parked"); return }
         latched = true
+        alertArbiter.setDrowsinessCriticalActive(true)   // luôn gọi -- KHÔNG gate theo voiceEnabled
 
         val prefs = alertPreferencesStore.get()
         var anySucceeded = false
@@ -406,22 +420,37 @@ class DrowsinessController(
             catch (t: Throwable) { Log.e(TAG, "Climate gateway failure: ${t.message}") }
         }
         if (prefs.voiceEnabled) {
-            try {
-                alertArbiter.setDrowsinessCriticalActive(true)
-                alertArbiter.requestVoiceAlert(AlertSource.DROWSINESS)
-                anySucceeded = true
-            } catch (t: Throwable) { Log.e(TAG, "Voice gateway failure: ${t.message}") }
+            try { alertArbiter.requestVoiceAlert(AlertSource.DROWSINESS); anySucceeded = true }
+            catch (t: Throwable) { Log.e(TAG, "Voice gateway failure: ${t.message}") }
         }
 
         lastGatewayAction = if (anySucceeded) GatewayActionStatus.OVERRIDE_APPLIED else GatewayActionStatus.OVERRIDE_FAILED
         DebugOverlayState.instance.updateGatewayAction(lastGatewayAction.name)
     }
+
+    private fun revertToBaseline() {
+        latched = false
+        alertArbiter.setDrowsinessCriticalActive(false)   // luôn gọi -- đối xứng với trên
+        alertArbiter.stopAlert(AlertSource.DROWSINESS)     // an toàn gọi vô điều kiện -- đã có ownership check
+        try {
+            climateGateway.revertToBaseline()
+            lastGatewayAction = GatewayActionStatus.REVERTED
+        } catch (t: Throwable) {
+            Log.e(TAG, "Climate gateway failure reverting to baseline: ${t.message}")
+            lastGatewayAction = GatewayActionStatus.REVERT_FAILED
+        }
+        DebugOverlayState.instance.updateGatewayAction(lastGatewayAction.name)
+    }
 }
 ```
+(`DebugOverlayState.instance` đã xác nhận tồn tại thật trong codebase —
+`DrowsinessController.kt` hiện tại đã gọi đúng method này, không phải tham
+chiếu suy đoán.)
 
-Cùng pattern (try/catch độc lập) áp dụng cho `revertToBaseline()`.
-`DistractionController` không cần tách (chỉ 1 kênh voice) nhưng vẫn cần nhận
-`alertPreferencesStore` để check `voiceEnabled`:
+`DistractionController` chỉ có 1 kênh (voice) nên không có vấn đề coupling
+climate/voice, nhưng vẫn cần nhận `alertPreferencesStore` để check
+`voiceEnabled` — **không** có cờ ưu tiên nào cần tách ra như bên trên (chỉ
+`DrowsinessController` gọi `setDrowsinessCriticalActive()`):
 
 ```kotlin
 class DistractionController(
@@ -437,8 +466,27 @@ class DistractionController(
             catch (t: Throwable) { Log.e(TAG, "Gateway failure: ${t.message}") }
         }
     }
+
+    private fun revertToBaseline() {
+        latched = false
+        try { alertArbiter.stopAlert(AlertSource.DISTRACTION) }
+        catch (t: Throwable) { Log.e(TAG, "Gateway failure: ${t.message}") }
+    }
 }
 ```
+
+### Test hiện có sẽ vỡ compile — phải cập nhật, không phải việc mới
+
+3 file test đã tồn tại và đã xác nhận đọc trực tiếp, gọi constructor cũ:
+- `DrowsinessControllerTest.kt`: `DrowsinessController(climate, arbiter)` (2 tham số)
+- `DistractionControllerTest.kt`: `DistractionController(arbiter)` (1 tham số)
+- `AlertArbiterIntegrationTest.kt`: cả hai, cùng constructor cũ
+
+Cả 3 file: thêm `InMemoryAlertPreferencesStore()` (mặc định, an toàn — không
+cần override gì) vào `setUp()`, truyền vào constructor. **Assertions của mọi
+test hiện có giữ nguyên, chỉ đổi cách construct** — đúng cách đã ghi rõ khi
+đổi constructor lần trước (Task 12, thêm `AlertArbiter` vào
+`DrowsinessController`).
 
 ### Bug: `RealVehicleContextGateway` leak binder connection nếu tạo mới mỗi lần poll
 
@@ -477,8 +525,11 @@ aaos-cockpit-app/app/src/main/java/com/vitalguard/ai/
 ├── VoiceEmergencyAssistant.kt     # speakAlert() dùng Bundle KEY_PARAM_VOLUME
 └── VitalGuardMonitorService.kt    # wire AlertPreferencesStore + VehicleContextPollClient
 aaos-cockpit-app/app/src/test/java/com/vitalguard/ai/
-├── DrowsinessControllerTest.kt    # +6 test mới
-└── DistractionControllerTest.kt   # +3 test mới
+├── DrowsinessControllerTest.kt      # +6 test mới; setUp() thêm InMemoryAlertPreferencesStore()
+├── DistractionControllerTest.kt     # +3 test mới; setUp() thêm InMemoryAlertPreferencesStore()
+└── AlertArbiterIntegrationTest.kt   # +1 test mới; setUp() thêm InMemoryAlertPreferencesStore()
+                                      # (cả 3 file: constructor DrowsinessController/DistractionController
+                                      #  đổi từ 2/1 tham số lên 3/2 tham số -- vỡ compile nếu không sửa)
 ```
 
 ---
@@ -494,6 +545,7 @@ aaos-cockpit-app/app/src/test/java/com/vitalguard/ai/
 | `VehicleContextPollClientTest.kt` | `a_failing_tick_does_not_stop_subsequent_polling` |
 | `DrowsinessControllerTest.kt` (+mới) | `does_not_freeze_latch_across_park_then_unpark_while_still_critical` · `park_while_critical_active_reverts_to_baseline` · `climate_failure_does_not_prevent_voice_alert_from_firing` · `voice_failure_does_not_prevent_climate_override_from_applying` · `climateEnabled_false_skips_climate_but_still_fires_voice` · `voiceEnabled_false_skips_voice_but_still_applies_climate` |
 | `DistractionControllerTest.kt` (+mới) | `does_not_freeze_latch_across_park_then_unpark_while_still_critical` · `park_while_critical_active_reverts_to_baseline` · `voiceEnabled_false_suppresses_distraction_reminder` |
+| `AlertArbiterIntegrationTest.kt` (+mới) | `drowsiness_critical_with_voice_disabled_still_suppresses_concurrent_distraction` — khóa đúng bug vừa tìm: drowsiness CRITICAL với `voiceEnabled=false` (chỉ climate) → `setDrowsinessCriticalActive(true)` vẫn phải chạy → distraction CRITICAL đồng thời phải bị suppress (không `distractionReminderTriggered`), y hệt shape 2 test hiện có trong file này (`drowsiness connection-lost while critical clears the arbiter flag...`) |
 
 **Không unit test, verify tay trên VM thật** (nhất quán với tiền lệ
 `PrefsGatewayModeStore` hiện không có test nào trong repo):
