@@ -10,6 +10,23 @@ data class TriggerFeatures(
 )
 
 @Serializable
+data class DistractionInfo(
+    val score: Float,
+    val state: String,
+    val yawDeg: Float,
+    val pitchDeg: Float,
+    val handsVisibility: String,
+    val handsOnWheel: Boolean,
+    val reason: String
+) {
+    companion object {
+        const val VISIBILITY_FULL = "FULL"
+        const val VISIBILITY_PARTIAL = "PARTIAL"
+        const val VISIBILITY_UNKNOWN = "UNKNOWN"
+    }
+}
+
+@Serializable
 data class TriggerPayload(
     val timestampMs: Long,
     val source: String,
@@ -18,7 +35,8 @@ data class TriggerPayload(
     val state: String,
     val features: TriggerFeatures,
     val reason: String,
-    val correlationId: String
+    val correlationId: String,
+    val distraction: DistractionInfo
 ) {
     companion object {
         const val STATE_NORMAL = "NORMAL"

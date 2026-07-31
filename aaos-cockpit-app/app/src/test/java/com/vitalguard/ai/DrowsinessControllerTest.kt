@@ -9,13 +9,15 @@ import org.junit.Test
 class DrowsinessControllerTest {
     private lateinit var climate: FakeClimateActuatorGateway
     private lateinit var voice: FakeVoiceAlertGateway
+    private lateinit var arbiter: AlertArbiter
     private lateinit var controller: DrowsinessController
 
     @Before
     fun setUp() {
         climate = FakeClimateActuatorGateway()
         voice = FakeVoiceAlertGateway()
-        controller = DrowsinessController(climate, voice)
+        arbiter = AlertArbiter(voice)
+        controller = DrowsinessController(climate, arbiter)
     }
 
     private fun payload(state: String, correlationId: String) = TriggerPayload(
@@ -23,6 +25,10 @@ class DrowsinessControllerTest {
         state = state,
         features = TriggerFeatures(perclos = 0.8f, eyeOpenProbability = 0.1f, headEulerAngleX = 28.0f),
         reason = "test", correlationId = correlationId,
+        distraction = DistractionInfo(
+            score = 0.0f, state = TriggerPayload.STATE_NORMAL, yawDeg = 0.0f, pitchDeg = 0.0f,
+            handsVisibility = DistractionInfo.VISIBILITY_UNKNOWN, handsOnWheel = false, reason = "test"
+        ),
     )
 
     @Test

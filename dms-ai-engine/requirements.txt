@@ -42,6 +42,18 @@
 # b0e7274907a1644404fef66b28dd6d85 / sOcnSQehZEQE/vZrKN1thQ==). Bumping to a
 # future face_landmarker v2, if MediaPipe ever publishes one, is a deliberate
 # edit to the Dockerfile URL, not something that happens on its own.
+#
+# mediapipe==0.10.14 covers both the Face Landmarker Tasks API
+# (output_facial_transformation_matrixes/output_face_blendshapes) and the
+# Hand Landmarker Tasks API (added for distraction detection). Confirmed
+# `mediapipe.tasks.python.vision.HandLandmarker` imports and
+# `HandLandmarker.create_from_options(...)` constructs without error against
+# the actual /app/models/hand_landmarker.task bundle, on both Windows dev
+# (Python 3.12) and the built Linux container (python:3.12-slim, same image
+# as ../Dockerfile) -- see task-1-report.md's "Fix" section for the exact
+# commands/output. (This is separate from the earlier 2026-07-29 Face
+# Landmarker Tasks API verification above, which is unrelated to Hand
+# Landmarker.)
 mediapipe==0.10.14
 numpy==2.5.1
 requests==2.32.5

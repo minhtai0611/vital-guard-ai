@@ -3,7 +3,7 @@
   "title": "Vital-Guard AI Trigger Payload",
   "description": "Wire format for DMS trigger events, delivered as an HTTP JSON body over the local network-pin (GET /latest-trigger). Kept nested (not flattened) because the transport is HTTP JSON, not Android Intent extras — see docs/superpowers/specs/2026-07-28-dms-delivery-fsm-reconciliation-design.md Decision 4.",
   "type": "object",
-  "required": ["timestampMs", "source", "score", "confidence", "state", "features", "reason", "correlationId"],
+  "required": ["timestampMs", "source", "score", "confidence", "state", "features", "reason", "correlationId", "distraction"],
   "properties": {
     "timestampMs": { "type": "integer", "description": "Epoch milliseconds." },
     "source": { "type": "string", "enum": ["container-python", "debug", "replay", "mock-stream"] },
@@ -20,6 +20,19 @@
       }
     },
     "reason": { "type": "string" },
-    "correlationId": { "type": "string" }
+    "correlationId": { "type": "string" },
+    "distraction": {
+      "type": "object",
+      "required": ["score", "state", "yawDeg", "pitchDeg", "handsVisibility", "handsOnWheel", "reason"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "state": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL"] },
+        "yawDeg": { "type": "number" },
+        "pitchDeg": { "type": "number" },
+        "handsVisibility": { "type": "string", "enum": ["FULL", "PARTIAL", "UNKNOWN"] },
+        "handsOnWheel": { "type": "boolean" },
+        "reason": { "type": "string" }
+      }
+    }
   }
 }

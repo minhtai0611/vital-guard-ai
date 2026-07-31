@@ -47,18 +47,22 @@ class VitalGuardMonitorService : Service() {
             GatewayMode.REAL -> RealVoiceAlertGateway(this)
             GatewayMode.FAKE -> FakeVoiceAlertGateway()
         }
-        val controller = DrowsinessController(climateGateway, voiceGateway)
+        val alertArbiter = AlertArbiter(voiceGateway)
+        val drowsinessController = DrowsinessController(climateGateway, alertArbiter)
+        val distractionController = DistractionController(alertArbiter)
 
         pollClient = TriggerPollClient(
             fetcher = HttpTriggerFetcher(CONTAINER_NODE_BASE_URL),
             scope = serviceScope,
             onPayload = { payload ->
-                DebugOverlayState.instance.updateFromPayload(payload)
-                controller.onPayload(payload)
+                drowsinessController.onPayload(payload)
+                distractionController.onPayload(payload)
             },
             onConnectionLost = {
-                DebugOverlayState.instance.markConnectionLost()
-                controller.onConnectionLost()
+                drowsinessController.onConnectionLost()
+                distractionController.onConnectionLost()
+                DebugOverlayState.instance.updateFromPayload(payload)
+                controller.onPayload(payload)
             },
         )
         pollClient.start()

@@ -59,6 +59,12 @@ replaced, not patched.
 - Distraction/yaw-based detection is explicitly out of scope for this plan
   (deferred by the user) — do not add a yaw signal, a new schema state, or
   any FSM change for it.
+
+  **Superseded:** this deferral was reversed by explicit user decision in
+  `docs/superpowers/plans/2026-07-30-distraction-detection.md` — that plan
+  adds a yaw signal, a new `distraction` schema object, and new Kotlin FSM
+  components. This line is kept for historical accuracy about THIS plan's
+  own original scope, not as a current restriction.
 - `contracts/trigger.schema.json`'s shape is unchanged by this plan — same
   `headEulerAngleX`/`eyeOpenProbability` fields, just computed differently.
 
