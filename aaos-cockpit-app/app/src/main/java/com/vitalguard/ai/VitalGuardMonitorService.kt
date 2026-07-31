@@ -61,6 +61,8 @@ class VitalGuardMonitorService : Service() {
             onConnectionLost = {
                 drowsinessController.onConnectionLost()
                 distractionController.onConnectionLost()
+                DebugOverlayState.instance.updateFromPayload(payload)
+                controller.onPayload(payload)
             },
         )
         pollClient.start()

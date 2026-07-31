@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.car.permission.CONTROL_CAR_CLIMATE" />
+
+    <application android:label="VitalGuard HVAC Bridge">
+
+        <!-- Standalone Option C safety-net priv-app (see root CLAUDE.md's "HVAC Permission
+             Risk" section): isolates the CarPropertyManager writes into their own small
+             priv-app so a broken bridge only needs this one component fixed, independent of
+             whether the main app's own RealClimateActuatorGateway path is also wired up. -->
+        <receiver
+            android:name=".HvacBridgeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.vitalguard.ai.bridge.APPLY_HVAC_OVERRIDE" />
+                <action android:name="com.vitalguard.ai.bridge.REVERT_HVAC_BASELINE" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>
