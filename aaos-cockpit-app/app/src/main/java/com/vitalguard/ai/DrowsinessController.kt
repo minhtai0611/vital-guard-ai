@@ -3,10 +3,16 @@ package com.vitalguard.ai
 import android.util.Log
 
 /**
- * Thin FSM — trusts trigger_emitter.py's hysteresis/sustain/cooldown (any
- * CRITICAL payload received here already represents a sustained state); this
- * class only owns latch-until-explicit-signal, idempotency, connection-loss
- * fallback, and gateway crash-safety. See design doc Decision 6.
+ * Thin FSM — owns latch-until-explicit-signal, idempotency, connection-loss
+ * fallback, and gateway crash-safety. Trusts `payload.state` directly and
+ * does not debounce it itself: `payload.state` is `_state_for_score()`'s
+ * instantaneous threshold read, not a sustained value. Sustain/cooldown
+ * lives entirely in the emitters' *publish gate* (trigger_emitter.py),
+ * which now fires on either the drowsiness OR the distraction emitter's
+ * edge (main.py's `run_real_video()`: `signal in (...) or
+ * distraction_signal in (...)`) -- so a delivered CRITICAL can arrive on
+ * a distraction-only publish edge without drowsiness's own emitter having
+ * sustained it. See design doc Decision 6.
  */
 class DrowsinessController(
     private val climateGateway: ClimateActuatorGateway,

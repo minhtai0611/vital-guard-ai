@@ -30,7 +30,6 @@ hardware (design doc Known Limitations).
 """
 from typing import List
 
-import mediapipe as mp
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.core.base_options import BaseOptions
 
