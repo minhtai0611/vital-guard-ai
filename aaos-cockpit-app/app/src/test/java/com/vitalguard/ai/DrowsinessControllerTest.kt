@@ -90,4 +90,80 @@ class DrowsinessControllerTest {
         controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
         assertFalse(climate.overrideApplied)
     }
+
+    @Test
+    fun `duplicate correlationId does not call the gateway or arbiter again`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 1))
+        assertTrue(climate.overrideApplied)
+        climate.overrideApplied = false
+        voice.alertTriggered = false
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 1))
+
+        assertFalse(climate.overrideApplied)
+        assertFalse(voice.alertTriggered)
+    }
+
+    @Test
+    fun `consecutive CRITICAL with the same level does not re-apply climate but still fires voice every payload`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 2))
+        assertEquals(2, climate.lastAppliedLevel)
+        climate.overrideApplied = false // reset to prove no SECOND climate call happened
+        voice.alertTriggered = false
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0002", escalationLevel = 2))
+
+        assertFalse(climate.overrideApplied)
+        assertTrue(voice.alertTriggered)
+        assertEquals(2, voice.lastAlertLevel)
+    }
+
+    @Test
+    fun `CRITICAL with an increased level re-applies climate at the new level`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 1))
+        assertEquals(1, climate.lastAppliedLevel)
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0002", escalationLevel = 2))
+
+        assertTrue(climate.overrideApplied)
+        assertEquals(2, climate.lastAppliedLevel)
+    }
+
+    @Test
+    fun `climate failure sets OVERRIDE_FAILED and retries the same level on the next payload`() {
+        climate.throwOnApply = true
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 1))
+
+        assertEquals(DrowsinessController.GatewayActionStatus.OVERRIDE_FAILED, controller.lastGatewayAction)
+        assertFalse(climate.overrideApplied)
+
+        climate.throwOnApply = false
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0002", escalationLevel = 1))
+
+        assertTrue(climate.overrideApplied)
+        assertEquals(1, climate.lastAppliedLevel)
+    }
+
+    @Test
+    fun `UNKNOWN reverts to baseline and clears the last applied climate level`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 3))
+
+        controller.onPayload(payload(TriggerPayload.STATE_UNKNOWN, "vg-0002"))
+
+        assertTrue(climate.revertCalled)
+        assertTrue(voice.stopCalled)
+    }
+
+    @Test
+    fun `after UNKNOWN a fresh CRITICAL at level 1 re-applies the override from scratch`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 3))
+        controller.onPayload(payload(TriggerPayload.STATE_UNKNOWN, "vg-0002"))
+        climate.overrideApplied = false
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0003", escalationLevel = 1))
+
+        assertTrue(climate.overrideApplied)
+        assertEquals(1, climate.lastAppliedLevel)
+    }
 }
