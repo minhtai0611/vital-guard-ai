@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
 
@@ -21,10 +22,25 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale.US // Sử dụng tiếng Anh chuyên nghiệp theo proposal
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) {}
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {}
+                override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                    if (interrupted) {
+                        // Pure observability -- does not change timing/control flow. Lets
+                        // rehearsal on the real demo device (adb logcat) catch a
+                        // repeat_interval_seconds/utterance-length mismatch before the
+                        // live show, per design doc Section 3 "Ràng buộc thời lượng TTS".
+                        Log.w(TAG, "Utterance cut off before completion: $utteranceId")
+                    }
+                }
+            })
         }
     }
 
-    fun executeVoiceIntervention() {
+    fun executeVoiceIntervention(level: Int) {
         // 1. Cấu hình Audio Attributes với độ ưu tiên cao nhất (ASSISTANT / EMERGENCY)
         val playbackAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -44,19 +60,37 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         val result = audioManager.requestAudioFocus(focusRequest!!)
         if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             Log.w(TAG, "🔇 Audio Focus Obtained! Vehicle Media Muted.")
-            speakAlert()
+            speakAlert(level)
         } else {
             Log.e(TAG, "❌ Audio Focus Request Denied.")
         }
     }
 
-    private fun speakAlert() {
-        val alertText = "Warning! Drowsiness detected! Climate safety mode engaged. Please stay awake. Shall I guide you to the nearest rest stop?"
-        tts?.speak(alertText, TextToSpeech.QUEUE_FLUSH, null, "EMERGENCY_ALERT")
-        Log.i(TAG, "🗣️ Speaking Alert: '$alertText'")
+    // Level->copy mapping is Kotlin-owned -- Python only sends an escalationLevel
+    // int (see design doc docs/superpowers/specs/2026-07-31-alert-escalation-design.md
+    // Section 3). repeat_interval_seconds on the Python side was tuned to exceed
+    // each of these utterances' estimated spoken duration with margin -- if this
+    // copy changes, re-measure with TextToSpeech and re-tune the Python-side
+    // interval constants, do not assume the margin still holds.
+    private fun drowsinessAlertTextFor(level: Int): String = when (level) {
+        1 -> "Warning! Drowsiness detected! Climate safety mode engaged. Please stay awake. Shall I guide you to the nearest rest stop?"
+        2 -> "You're still drowsy. Please pull over now."
+        else -> "Pull over immediately. Not safe to continue."
     }
 
-    fun executeDistractionReminder() {
+    private fun speakAlert(level: Int) {
+        val alertText = drowsinessAlertTextFor(level)
+        tts?.speak(alertText, TextToSpeech.QUEUE_FLUSH, null, "EMERGENCY_ALERT")
+        Log.i(TAG, "🗣️ Speaking Alert (level $level): '$alertText'")
+    }
+
+    private fun distractionReminderTextFor(level: Int): String = when (level) {
+        1 -> "Please keep your eyes on the road and both hands on the wheel."
+        2 -> "Eyes on the road, please. This is important."
+        else -> "Eyes on the road now!"
+    }
+
+    fun executeDistractionReminder(level: Int) {
         // Lighter than executeVoiceIntervention()'s _EXCLUSIVE request -- a brief
         // distraction reminder shouldn't seize/mute all cabin audio the way a
         // sustained drowsiness alert does. Placeholder wording/focus behavior,
@@ -78,9 +112,9 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         val result = audioManager.requestAudioFocus(reminderFocusRequest)
         if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             focusRequest = reminderFocusRequest
-            val reminderText = "Please keep your eyes on the road and both hands on the wheel."
+            val reminderText = distractionReminderTextFor(level)
             tts?.speak(reminderText, TextToSpeech.QUEUE_FLUSH, null, "DISTRACTION_REMINDER")
-            Log.i(TAG, "🗣️ Speaking distraction reminder: '$reminderText'")
+            Log.i(TAG, "🗣️ Speaking distraction reminder (level $level): '$reminderText'")
         } else {
             Log.e(TAG, "❌ Distraction reminder audio focus request denied.")
         }
