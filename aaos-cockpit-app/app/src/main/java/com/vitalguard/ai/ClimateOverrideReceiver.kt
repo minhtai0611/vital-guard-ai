@@ -26,8 +26,11 @@ class ClimateOverrideReceiver(
         val score = intent.getFloatExtra("drowsiness_score", 0f)
         Log.w(TAG, "Manual fallback TRIGGER_ALERT received. Score: $score")
         // Manual one-shot fallback -- no escalation state of its own, always level 1
-        // (the original pre-escalation baseline behavior).
-        RealClimateActuatorGateway(context).applyDrowsinessOverride(1)
+        // (the original pre-escalation baseline behavior). Still reads the driver's
+        // actual saved AlertPreferences (climateIntensity) via PrefsAlertPreferencesStore,
+        // same as the automated path would -- this ADB fallback should not silently
+        // ignore the driver's chosen intensity.
+        RealClimateActuatorGateway(context, PrefsAlertPreferencesStore(context)).applyDrowsinessOverride(1)
         voiceAssistant?.executeVoiceIntervention(1)
     }
 }

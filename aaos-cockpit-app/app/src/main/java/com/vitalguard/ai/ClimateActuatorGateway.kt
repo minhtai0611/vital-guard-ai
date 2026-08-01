@@ -33,60 +33,83 @@ class FakeClimateActuatorGateway : ClimateActuatorGateway {
 
 /** Real VHAL implementation — logic relocated verbatim from ClimateOverrideReceiver
  * (Task 13), which now only constructs this class for its dormant manual-fallback role. */
-class RealClimateActuatorGateway(private val context: Context) : ClimateActuatorGateway {
+class RealClimateActuatorGateway(
+    private val context: Context,
+    private val alertPreferencesStore: AlertPreferencesStore,
+) : ClimateActuatorGateway {
     private val TAG = "VitalGuardClimate"
 
     companion object {
         private const val FALLBACK_AREA_ID = 1
-        private const val FALLBACK_FAN_SPEED = 7
         private const val BASELINE_FAN_SPEED = 2
         private const val BASELINE_TEMPERATURE_C = 25.0f
-
-        // Level->temperature mapping is Kotlin-owned -- Python only ever sends
-        // an escalationLevel int, never a real actuation value (see design doc
-        // docs/superpowers/specs/2026-07-31-alert-escalation-design.md Section 3).
-        // Level 1 == the pre-escalation baseline behavior (was COLD_TEMPERATURE_C).
-        private val TEMPERATURE_C_BY_LEVEL = mapOf(1 to 20.0f, 2 to 17.0f, 3 to 16.0f)
-        private const val FALLBACK_TEMPERATURE_C = 20.0f // used if level is somehow outside 1-3
-
-        private fun temperatureCFor(level: Int): Float = TEMPERATURE_C_BY_LEVEL[level] ?: FALLBACK_TEMPERATURE_C
     }
 
+    // `level` (from the alert-escalation feature) is intentionally NOT used to
+    // pick fan/temp values here -- per product decision, the driver's
+    // climateIntensity preference alone determines response strength, never
+    // silently overridden by how long CRITICAL has persisted. `level` still
+    // drives WHEN this is called (DrowsinessController only re-invokes this
+    // when the level changes) and is kept in the log line for diagnostics
+    // only. Voice still escalates its urgency/copy independent of this
+    // decision -- see
+    // docs/superpowers/specs/2026-07-31-alert-preferences-parked-suppression-design.md.
     override fun applyDrowsinessOverride(level: Int) {
         try {
             val car = Car.createCar(context)
             val carPropertyManager = car.getCarManager(Car.PROPERTY_SERVICE) as CarPropertyManager
-            val targetTemperatureC = temperatureCFor(level)
+            val intensity = alertPreferencesStore.get().climateIntensity
 
             forEachSupportedArea(carPropertyManager, VehiclePropertyIds.HVAC_AC_ON) { area ->
                 carPropertyManager.setBooleanProperty(VehiclePropertyIds.HVAC_AC_ON, area, true)
             }
             forEachSupportedArea(carPropertyManager, VehiclePropertyIds.HVAC_FAN_SPEED) { area ->
+                val targetFan = IntensityMapping.fanSpeedFor(intensity)
                 val config = carPropertyManager.getCarPropertyConfig(VehiclePropertyIds.HVAC_FAN_SPEED)
-                @Suppress("DEPRECATION")
-                val maxFanSpeed = (config?.getMaxValue(area) as? Int) ?: FALLBACK_FAN_SPEED
-                carPropertyManager.setIntProperty(VehiclePropertyIds.HVAC_FAN_SPEED, area, maxFanSpeed)
+                val clamped = clampFanSpeed(targetFan, config, area)
+                carPropertyManager.setIntProperty(VehiclePropertyIds.HVAC_FAN_SPEED, area, clamped)
             }
             forEachSupportedArea(carPropertyManager, VehiclePropertyIds.HVAC_TEMPERATURE_SET) { area ->
+                val targetTemp = IntensityMapping.temperatureCFor(intensity)
                 val config = carPropertyManager.getCarPropertyConfig(VehiclePropertyIds.HVAC_TEMPERATURE_SET)
-                @Suppress("DEPRECATION")
-                val minTemperatureC = (config?.getMinValue(area) as? Float)
-                val clampedTemperatureC = if (minTemperatureC != null && targetTemperatureC < minTemperatureC) {
-                    Log.w(TAG, "Level $level target ${targetTemperatureC}C below config min ${minTemperatureC}C for area $area -- clamping")
-                    minTemperatureC
-                } else {
-                    targetTemperatureC
-                }
-                carPropertyManager.setFloatProperty(VehiclePropertyIds.HVAC_TEMPERATURE_SET, area, clampedTemperatureC)
+                val clamped = clampTemperature(targetTemp, config, area)
+                carPropertyManager.setFloatProperty(VehiclePropertyIds.HVAC_TEMPERATURE_SET, area, clamped)
             }
-            Log.d(TAG, "Climate override applied at level $level: AC=ON, Fan=max, Temp=${targetTemperatureC}C")
+            Log.d(TAG, "Climate override applied at level $level, intensity=$intensity")
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to apply VHAL climate override at level $level: ${t.message}")
             throw t
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun clampFanSpeed(target: Int, config: android.car.hardware.CarPropertyConfig<*>?, area: Int): Int {
+        if (config == null) {
+            Log.w(TAG, "HVAC_FAN_SPEED clamp skipped — config unavailable, using raw intensity value $target")
+            return target
+        }
+        val min = config.getMinValue(area) as? Int ?: return target
+        val max = config.getMaxValue(area) as? Int ?: return target
+        val clamped = target.coerceIn(min, max)
+        if (clamped != target) Log.w(TAG, "HVAC_FAN_SPEED clamped $target -> $clamped (range [$min,$max])")
+        return clamped
+    }
+
+    @Suppress("DEPRECATION")
+    private fun clampTemperature(target: Float, config: android.car.hardware.CarPropertyConfig<*>?, area: Int): Float {
+        if (config == null) {
+            Log.w(TAG, "HVAC_TEMPERATURE_SET clamp skipped — config unavailable, using raw intensity value $target")
+            return target
+        }
+        val min = config.getMinValue(area) as? Float ?: return target
+        val max = config.getMaxValue(area) as? Float ?: return target
+        val clamped = target.coerceIn(min, max)
+        if (clamped != target) Log.w(TAG, "HVAC_TEMPERATURE_SET clamped $target -> $clamped (range [$min,$max])")
+        return clamped
+    }
+
     override fun revertToBaseline() {
+        // unchanged from before -- baseline is fixed, never depends on climateIntensity or level
         try {
             val car = Car.createCar(context)
             val carPropertyManager = car.getCarManager(Car.PROPERTY_SERVICE) as CarPropertyManager
