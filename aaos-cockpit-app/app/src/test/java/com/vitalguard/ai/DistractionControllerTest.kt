@@ -17,13 +17,13 @@ class DistractionControllerTest {
         controller = DistractionController(arbiter)
     }
 
-    private fun payload(distractionState: String, correlationId: String) = TriggerPayload(
+    private fun payload(distractionState: String, correlationId: String, escalationLevel: Int = 1) = TriggerPayload(
         timestampMs = 0L, source = "test", score = 0.1f, confidence = 1.0f,
-        state = TriggerPayload.STATE_NORMAL,
+        state = TriggerPayload.STATE_NORMAL, escalationLevel = 1,
         features = TriggerFeatures(perclos = 0.0f, eyeOpenProbability = 1.0f, headEulerAngleX = 0.0f),
         reason = "test", correlationId = correlationId,
         distraction = DistractionInfo(
-            score = 0.9f, state = distractionState, yawDeg = 45.0f, pitchDeg = 5.0f,
+            score = 0.9f, state = distractionState, escalationLevel = escalationLevel, yawDeg = 45.0f, pitchDeg = 5.0f,
             handsVisibility = DistractionInfo.VISIBILITY_FULL, handsOnWheel = false, reason = "test",
         ),
     )

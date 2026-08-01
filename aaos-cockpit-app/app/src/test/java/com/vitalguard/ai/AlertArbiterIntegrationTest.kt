@@ -22,11 +22,11 @@ class AlertArbiterIntegrationTest {
     }
 
     private fun drowsinessPayload(state: String, correlationId: String) = TriggerPayload(
-        timestampMs = 0L, source = "test", score = 0.9f, confidence = 1.0f, state = state,
+        timestampMs = 0L, source = "test", score = 0.9f, confidence = 1.0f, state = state, escalationLevel = 1,
         features = TriggerFeatures(perclos = 0.8f, eyeOpenProbability = 0.1f, headEulerAngleX = 28.0f),
         reason = "test", correlationId = correlationId,
         distraction = DistractionInfo(
-            score = 0.0f, state = TriggerPayload.STATE_NORMAL, yawDeg = 0.0f, pitchDeg = 0.0f,
+            score = 0.0f, state = TriggerPayload.STATE_NORMAL, escalationLevel = 1, yawDeg = 0.0f, pitchDeg = 0.0f,
             handsVisibility = DistractionInfo.VISIBILITY_UNKNOWN, handsOnWheel = false, reason = "test",
         ),
     )
@@ -44,7 +44,7 @@ class AlertArbiterIntegrationTest {
         distractionController.onPayload(
             drowsinessPayload(TriggerPayload.STATE_NORMAL, "vg-9001").copy(
                 distraction = DistractionInfo(
-                    score = 0.9f, state = TriggerPayload.STATE_CRITICAL, yawDeg = 45.0f, pitchDeg = 5.0f,
+                    score = 0.9f, state = TriggerPayload.STATE_CRITICAL, escalationLevel = 1, yawDeg = 45.0f, pitchDeg = 5.0f,
                     handsVisibility = DistractionInfo.VISIBILITY_FULL, handsOnWheel = false, reason = "test",
                 )
             )
@@ -59,7 +59,7 @@ class AlertArbiterIntegrationTest {
         distractionController.onPayload(
             drowsinessPayload(TriggerPayload.STATE_CRITICAL, "vg-0002").copy(
                 distraction = DistractionInfo(
-                    score = 0.9f, state = TriggerPayload.STATE_CRITICAL, yawDeg = 45.0f, pitchDeg = 5.0f,
+                    score = 0.9f, state = TriggerPayload.STATE_CRITICAL, escalationLevel = 1, yawDeg = 45.0f, pitchDeg = 5.0f,
                     handsVisibility = DistractionInfo.VISIBILITY_FULL, handsOnWheel = false, reason = "test",
                 )
             )
@@ -69,7 +69,7 @@ class AlertArbiterIntegrationTest {
         distractionController.onPayload(
             drowsinessPayload(TriggerPayload.STATE_CRITICAL, "vg-0003").copy(
                 distraction = DistractionInfo(
-                    score = 0.1f, state = TriggerPayload.STATE_NORMAL, yawDeg = 0.0f, pitchDeg = 0.0f,
+                    score = 0.1f, state = TriggerPayload.STATE_NORMAL, escalationLevel = 1, yawDeg = 0.0f, pitchDeg = 0.0f,
                     handsVisibility = DistractionInfo.VISIBILITY_FULL, handsOnWheel = true, reason = "test",
                 )
             )

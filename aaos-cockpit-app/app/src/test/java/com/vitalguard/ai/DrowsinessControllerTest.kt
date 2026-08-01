@@ -20,13 +20,13 @@ class DrowsinessControllerTest {
         controller = DrowsinessController(climate, arbiter)
     }
 
-    private fun payload(state: String, correlationId: String) = TriggerPayload(
+    private fun payload(state: String, correlationId: String, escalationLevel: Int = 1) = TriggerPayload(
         timestampMs = 0L, source = "test", score = 0.9f, confidence = 1.0f,
-        state = state,
+        state = state, escalationLevel = escalationLevel,
         features = TriggerFeatures(perclos = 0.8f, eyeOpenProbability = 0.1f, headEulerAngleX = 28.0f),
         reason = "test", correlationId = correlationId,
         distraction = DistractionInfo(
-            score = 0.0f, state = TriggerPayload.STATE_NORMAL, yawDeg = 0.0f, pitchDeg = 0.0f,
+            score = 0.0f, state = TriggerPayload.STATE_NORMAL, escalationLevel = 1, yawDeg = 0.0f, pitchDeg = 0.0f,
             handsVisibility = DistractionInfo.VISIBILITY_UNKNOWN, handsOnWheel = false, reason = "test"
         ),
     )

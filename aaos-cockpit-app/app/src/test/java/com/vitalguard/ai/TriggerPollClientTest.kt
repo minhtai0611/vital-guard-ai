@@ -18,10 +18,10 @@ private class FakeTriggerFetcher(private val script: MutableList<FetchResult>) :
 
 private fun samplePayload(id: String) = TriggerPayload(
     timestampMs = 0L, source = "test", score = 0.9f, confidence = 1.0f,
-    state = TriggerPayload.STATE_CRITICAL,
+    state = TriggerPayload.STATE_CRITICAL, escalationLevel = 1,
     features = TriggerFeatures(0.8f, 0.1f, 28.0f), reason = "test", correlationId = id,
     distraction = DistractionInfo(
-        score = 0.0f, state = TriggerPayload.STATE_NORMAL, yawDeg = 0.0f, pitchDeg = 0.0f,
+        score = 0.0f, state = TriggerPayload.STATE_NORMAL, escalationLevel = 1, yawDeg = 0.0f, pitchDeg = 0.0f,
         handsVisibility = DistractionInfo.VISIBILITY_UNKNOWN, handsOnWheel = false, reason = "test"
     ),
 )

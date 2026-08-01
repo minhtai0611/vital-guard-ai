@@ -17,11 +17,12 @@ class TriggerPayloadTest {
               "score": 0.91,
               "confidence": 1.0,
               "state": "CRITICAL",
+              "escalationLevel": 1,
               "features": {"perclos": 0.8, "eyeOpenProbability": 0.1, "headEulerAngleX": 28.0},
               "reason": "sustained_high_score",
               "correlationId": "vg-critical-0001",
               "distraction": {
-                "score": 0.0, "state": "NORMAL", "yawDeg": 0.0, "pitchDeg": 0.0,
+                "score": 0.0, "state": "NORMAL", "escalationLevel": 1, "yawDeg": 0.0, "pitchDeg": 0.0,
                 "handsVisibility": "FULL", "handsOnWheel": true, "reason": "none"
               }
             }
@@ -39,11 +40,11 @@ class TriggerPayloadTest {
         val raw = """
             {
               "timestampMs": 0, "source": "container-python", "score": 0.1, "confidence": 1.0,
-              "state": "NORMAL",
+              "state": "NORMAL", "escalationLevel": 1,
               "features": {"perclos": 0.0, "eyeOpenProbability": 1.0, "headEulerAngleX": 0.0},
               "reason": "test", "correlationId": "vg-test-0001",
               "distraction": {
-                "score": 0.9, "state": "CRITICAL", "yawDeg": 45.0, "pitchDeg": 5.0,
+                "score": 0.9, "state": "CRITICAL", "escalationLevel": 2, "yawDeg": 45.0, "pitchDeg": 5.0,
                 "handsVisibility": "FULL", "handsOnWheel": true, "reason": "gaze_off_road"
               }
             }
@@ -55,5 +56,6 @@ class TriggerPayloadTest {
         assertEquals(45.0f, payload.distraction.yawDeg)
         assertEquals("FULL", payload.distraction.handsVisibility)
         assertTrue(payload.distraction.handsOnWheel)
+        assertEquals(2, payload.distraction.escalationLevel)
     }
 }
