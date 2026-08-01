@@ -1,15 +1,16 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Vital-Guard AI Trigger Payload",
-  "description": "Wire format for DMS trigger events, delivered as an HTTP JSON body over the local network-pin (GET /latest-trigger). Kept nested (not flattened) because the transport is HTTP JSON, not Android Intent extras — see docs/superpowers/specs/2026-07-28-dms-delivery-fsm-reconciliation-design.md Decision 4.",
+  "description": "Wire format for DMS trigger events, delivered as an HTTP JSON body over the local network-pin (GET /latest-trigger). Kept nested (not flattened) because the transport is HTTP JSON, not Android Intent extras — see docs/superpowers/specs/2026-07-28-dms-delivery-fsm-reconciliation-design.md Decision 4. escalationLevel is top-level (mirrors state) while distraction.escalationLevel is nested (mirrors distraction.state) — intentional mirror of the existing state/distraction.state split, not an inconsistency (see docs/superpowers/specs/2026-07-31-alert-escalation-design.md Section 2).",
   "type": "object",
-  "required": ["timestampMs", "source", "score", "confidence", "state", "features", "reason", "correlationId", "distraction"],
+  "required": ["timestampMs", "source", "score", "confidence", "state", "escalationLevel", "features", "reason", "correlationId", "distraction"],
   "properties": {
     "timestampMs": { "type": "integer", "description": "Epoch milliseconds." },
     "source": { "type": "string", "enum": ["container-python", "debug", "replay", "mock-stream"] },
     "score": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
     "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
     "state": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL", "UNKNOWN"] },
+    "escalationLevel": { "type": "integer", "minimum": 1, "maximum": 3 },
     "features": {
       "type": "object",
       "required": ["perclos", "eyeOpenProbability", "headEulerAngleX"],
@@ -23,10 +24,11 @@
     "correlationId": { "type": "string" },
     "distraction": {
       "type": "object",
-      "required": ["score", "state", "yawDeg", "pitchDeg", "handsVisibility", "handsOnWheel", "reason"],
+      "required": ["score", "state", "escalationLevel", "yawDeg", "pitchDeg", "handsVisibility", "handsOnWheel", "reason"],
       "properties": {
         "score": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
         "state": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL"] },
+        "escalationLevel": { "type": "integer", "minimum": 1, "maximum": 3 },
         "yawDeg": { "type": "number" },
         "pitchDeg": { "type": "number" },
         "handsVisibility": { "type": "string", "enum": ["FULL", "PARTIAL", "UNKNOWN"] },
