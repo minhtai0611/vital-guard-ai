@@ -9,13 +9,15 @@ import org.junit.Test
 class DistractionControllerTest {
     private lateinit var voice: FakeVoiceAlertGateway
     private lateinit var arbiter: AlertArbiter
+    private lateinit var preferencesStore: InMemoryAlertPreferencesStore
     private lateinit var controller: DistractionController
 
     @Before
     fun setUp() {
         voice = FakeVoiceAlertGateway()
         arbiter = AlertArbiter(voice)
-        controller = DistractionController(arbiter)
+        preferencesStore = InMemoryAlertPreferencesStore()
+        controller = DistractionController(arbiter, preferencesStore)
     }
 
     private fun payload(distractionState: String, correlationId: String, escalationLevel: Int = 1) = TriggerPayload(
@@ -121,5 +123,39 @@ class DistractionControllerTest {
 
         assertTrue(voice.distractionReminderTriggered)
         assertEquals(1, voice.lastDistractionReminderLevel)
+    }
+
+    @Test
+    fun `does not freeze latch across park then unpark while still critical`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
+        assertTrue(voice.distractionReminderTriggered)
+
+        controller.onParkedStateChanged(true)
+        voice.distractionReminderTriggered = false
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0002"))
+        assertFalse(voice.distractionReminderTriggered) // suppressed, latch not poisoned
+
+        controller.onParkedStateChanged(false)
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0003"))
+        assertTrue(voice.distractionReminderTriggered) // must fire again
+    }
+
+    @Test
+    fun `park while critical active reverts to baseline`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
+        assertTrue(voice.distractionReminderTriggered)
+
+        controller.onParkedStateChanged(true)
+
+        assertTrue(voice.stopCalled)
+    }
+
+    @Test
+    fun `voiceEnabled false suppresses distraction reminder`() {
+        preferencesStore.save(AlertPreferences(voiceEnabled = false))
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
+
+        assertFalse(voice.distractionReminderTriggered)
     }
 }

@@ -13,12 +13,22 @@ import android.util.Log
  * CRITICAL payload's `distraction.escalationLevel` rather than latching
  * into a no-op after the first call -- see
  * docs/superpowers/specs/2026-07-31-alert-escalation-design.md Section 3.
+ *
+ * As of the alert-preferences-parked-suppression feature, this class also
+ * gates responses on `isParked` (via `onParkedStateChanged()`) and on the
+ * driver's `AlertPreferences.voiceEnabled` -- there is no climate channel
+ * here, so unlike `DrowsinessController` there is no combined-status
+ * `anySucceeded` bookkeeping needed.
  */
-class DistractionController(private val alertArbiter: AlertArbiter) {
+class DistractionController(
+    private val alertArbiter: AlertArbiter,
+    private val alertPreferencesStore: AlertPreferencesStore,
+) {
     private val TAG = "VitalGuardDistractionController"
 
     private var latched = false
     private var lastCorrelationId: String? = null
+    private var isParked = false
 
     fun onPayload(payload: TriggerPayload) {
         if (payload.correlationId == lastCorrelationId) {
@@ -37,17 +47,31 @@ class DistractionController(private val alertArbiter: AlertArbiter) {
         revertToBaseline()
     }
 
+    fun onParkedStateChanged(parked: Boolean) {
+        isParked = parked
+        if (parked && latched) revertToBaseline()
+    }
+
     // No latch-and-return: every CRITICAL payload is meaningful (original edge,
     // repeat_due, or level_changed) -- same reasoning as DrowsinessController,
     // see docs/superpowers/specs/2026-07-31-alert-escalation-design.md Section 3.
     // There is no climate channel here, so unlike DrowsinessController there is
-    // no per-level dedup needed -- voice simply fires every time.
+    // no per-level dedup needed -- voice simply fires every time. `isParked` is
+    // checked first and must never set latched=true when suppressing for being
+    // parked -- only when a gateway call is actually attempted (see
+    // docs/superpowers/specs/2026-07-31-alert-preferences-parked-suppression-design.md).
     private fun handleCritical(level: Int) {
+        if (isParked) {
+            Log.i(TAG, "Suppressed: vehicle parked")
+            return
+        }
         latched = true
-        try {
-            alertArbiter.requestVoiceAlert(AlertSource.DISTRACTION, level)
-        } catch (t: Throwable) {
-            Log.e(TAG, "Gateway failure requesting distraction reminder at level $level: ${t.message}")
+        if (alertPreferencesStore.get().voiceEnabled) {
+            try {
+                alertArbiter.requestVoiceAlert(AlertSource.DISTRACTION, level)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Gateway failure requesting distraction reminder at level $level: ${t.message}")
+            }
         }
     }
 
