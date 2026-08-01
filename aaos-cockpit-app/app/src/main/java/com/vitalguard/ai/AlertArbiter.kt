@@ -23,7 +23,7 @@ class AlertArbiter(private val voiceAlertGateway: VoiceAlertGateway) {
         drowsinessCriticalActive = active
     }
 
-    fun requestVoiceAlert(source: AlertSource) {
+    fun requestVoiceAlert(source: AlertSource, level: Int) {
         if (source == AlertSource.DISTRACTION && drowsinessCriticalActive) {
             Log.i(TAG, "Suppressed distraction alert -- drowsiness CRITICAL has priority")
             return
@@ -35,8 +35,8 @@ class AlertArbiter(private val voiceAlertGateway: VoiceAlertGateway) {
         }
         activeSpeaker = source
         when (source) {
-            AlertSource.DROWSINESS -> voiceAlertGateway.triggerAlert()
-            AlertSource.DISTRACTION -> voiceAlertGateway.triggerDistractionReminder()
+            AlertSource.DROWSINESS -> voiceAlertGateway.triggerAlert(level)
+            AlertSource.DISTRACTION -> voiceAlertGateway.triggerDistractionReminder(level)
         }
     }
 

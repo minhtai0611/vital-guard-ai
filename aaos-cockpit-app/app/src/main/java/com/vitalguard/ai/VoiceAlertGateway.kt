@@ -3,8 +3,8 @@ package com.vitalguard.ai
 import android.content.Context
 
 interface VoiceAlertGateway {
-    fun triggerAlert()
-    fun triggerDistractionReminder()
+    fun triggerAlert(level: Int)
+    fun triggerDistractionReminder(level: Int)
     fun stopAlert()
 }
 
@@ -14,19 +14,23 @@ class FakeVoiceAlertGateway : VoiceAlertGateway {
     var stopCalled: Boolean = false
     var throwOnTrigger: Boolean = false
     var throwOnStop: Boolean = false
+    var lastAlertLevel: Int? = null
+    var lastDistractionReminderLevel: Int? = null
 
     /** Records call order (e.g. "stopAlert", "triggerAlert") so handoff-ordering tests can assert on it. */
     val callLog: MutableList<String> = mutableListOf()
 
-    override fun triggerAlert() {
+    override fun triggerAlert(level: Int) {
         if (throwOnTrigger) throw IllegalStateException("simulated voice gateway failure")
         alertTriggered = true
+        lastAlertLevel = level
         callLog.add("triggerAlert")
     }
 
-    override fun triggerDistractionReminder() {
+    override fun triggerDistractionReminder(level: Int) {
         if (throwOnTrigger) throw IllegalStateException("simulated voice gateway failure")
         distractionReminderTriggered = true
+        lastDistractionReminderLevel = level
         callLog.add("triggerDistractionReminder")
     }
 
@@ -41,12 +45,12 @@ class FakeVoiceAlertGateway : VoiceAlertGateway {
 class RealVoiceAlertGateway(context: Context) : VoiceAlertGateway {
     private val assistant = VoiceEmergencyAssistant(context)
 
-    override fun triggerAlert() {
-        assistant.executeVoiceIntervention()
+    override fun triggerAlert(level: Int) {
+        assistant.executeVoiceIntervention(level)
     }
 
-    override fun triggerDistractionReminder() {
-        assistant.executeDistractionReminder()
+    override fun triggerDistractionReminder(level: Int) {
+        assistant.executeDistractionReminder(level)
     }
 
     override fun stopAlert() {
