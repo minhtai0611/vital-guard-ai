@@ -32,7 +32,7 @@ class BridgeClimateActuatorGatewayTest {
         mockConstruction(Intent::class.java) { _, constructionContext ->
             capturedActions.add(constructionContext.arguments().firstOrNull() as? String)
         }.use { mockedIntent ->
-            BridgeClimateActuatorGateway(context).applyDrowsinessOverride()
+            BridgeClimateActuatorGateway(context).applyDrowsinessOverride(1)
 
             assertEquals(listOf("com.vitalguard.ai.bridge.APPLY_HVAC_OVERRIDE"), capturedActions)
             verify(context, times(1)).sendBroadcast(mockedIntent.constructed()[0])

@@ -8,7 +8,7 @@ import android.content.Intent
 import android.util.Log
 
 interface ClimateActuatorGateway {
-    fun applyDrowsinessOverride()
+    fun applyDrowsinessOverride(level: Int)
     fun revertToBaseline()
 }
 
@@ -17,10 +17,12 @@ class FakeClimateActuatorGateway : ClimateActuatorGateway {
     var revertCalled: Boolean = false
     var throwOnApply: Boolean = false
     var throwOnRevert: Boolean = false
+    var lastAppliedLevel: Int? = null
 
-    override fun applyDrowsinessOverride() {
+    override fun applyDrowsinessOverride(level: Int) {
         if (throwOnApply) throw IllegalStateException("simulated climate gateway failure")
         overrideApplied = true
+        lastAppliedLevel = level
     }
 
     override fun revertToBaseline() {
@@ -37,15 +39,24 @@ class RealClimateActuatorGateway(private val context: Context) : ClimateActuator
     companion object {
         private const val FALLBACK_AREA_ID = 1
         private const val FALLBACK_FAN_SPEED = 7
-        private const val COLD_TEMPERATURE_C = 20.0f
         private const val BASELINE_FAN_SPEED = 2
         private const val BASELINE_TEMPERATURE_C = 25.0f
+
+        // Level->temperature mapping is Kotlin-owned -- Python only ever sends
+        // an escalationLevel int, never a real actuation value (see design doc
+        // docs/superpowers/specs/2026-07-31-alert-escalation-design.md Section 3).
+        // Level 1 == the pre-escalation baseline behavior (was COLD_TEMPERATURE_C).
+        private val TEMPERATURE_C_BY_LEVEL = mapOf(1 to 20.0f, 2 to 17.0f, 3 to 16.0f)
+        private const val FALLBACK_TEMPERATURE_C = 20.0f // used if level is somehow outside 1-3
+
+        private fun temperatureCFor(level: Int): Float = TEMPERATURE_C_BY_LEVEL[level] ?: FALLBACK_TEMPERATURE_C
     }
 
-    override fun applyDrowsinessOverride() {
+    override fun applyDrowsinessOverride(level: Int) {
         try {
             val car = Car.createCar(context)
             val carPropertyManager = car.getCarManager(Car.PROPERTY_SERVICE) as CarPropertyManager
+            val targetTemperatureC = temperatureCFor(level)
 
             forEachSupportedArea(carPropertyManager, VehiclePropertyIds.HVAC_AC_ON) { area ->
                 carPropertyManager.setBooleanProperty(VehiclePropertyIds.HVAC_AC_ON, area, true)
@@ -57,11 +68,20 @@ class RealClimateActuatorGateway(private val context: Context) : ClimateActuator
                 carPropertyManager.setIntProperty(VehiclePropertyIds.HVAC_FAN_SPEED, area, maxFanSpeed)
             }
             forEachSupportedArea(carPropertyManager, VehiclePropertyIds.HVAC_TEMPERATURE_SET) { area ->
-                carPropertyManager.setFloatProperty(VehiclePropertyIds.HVAC_TEMPERATURE_SET, area, COLD_TEMPERATURE_C)
+                val config = carPropertyManager.getCarPropertyConfig(VehiclePropertyIds.HVAC_TEMPERATURE_SET)
+                @Suppress("DEPRECATION")
+                val minTemperatureC = (config?.getMinValue(area) as? Float)
+                val clampedTemperatureC = if (minTemperatureC != null && targetTemperatureC < minTemperatureC) {
+                    Log.w(TAG, "Level $level target ${targetTemperatureC}C below config min ${minTemperatureC}C for area $area -- clamping")
+                    minTemperatureC
+                } else {
+                    targetTemperatureC
+                }
+                carPropertyManager.setFloatProperty(VehiclePropertyIds.HVAC_TEMPERATURE_SET, area, clampedTemperatureC)
             }
-            Log.d(TAG, "Climate override applied: AC=ON, Fan=max, Temp=${COLD_TEMPERATURE_C}C")
+            Log.d(TAG, "Climate override applied at level $level: AC=ON, Fan=max, Temp=${targetTemperatureC}C")
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to apply VHAL climate override: ${t.message}")
+            Log.e(TAG, "Failed to apply VHAL climate override at level $level: ${t.message}")
             throw t
         }
     }
@@ -110,7 +130,7 @@ class RealClimateActuatorGateway(private val context: Context) : ClimateActuator
  * broadcast); it does not throw, so it cannot itself trip the controller's
  * OVERRIDE_FAILED path — bridge health must be verified separately via logcat. */
 class BridgeClimateActuatorGateway(private val context: Context) : ClimateActuatorGateway {
-    override fun applyDrowsinessOverride() {
+    override fun applyDrowsinessOverride(level: Int) {
         context.sendBroadcast(Intent("com.vitalguard.ai.bridge.APPLY_HVAC_OVERRIDE"))
     }
 

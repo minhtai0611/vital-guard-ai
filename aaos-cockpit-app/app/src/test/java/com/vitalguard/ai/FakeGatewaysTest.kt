@@ -10,7 +10,7 @@ class FakeGatewaysTest {
         val gateway = FakeClimateActuatorGateway()
         assertFalse(gateway.overrideApplied)
 
-        gateway.applyDrowsinessOverride()
+        gateway.applyDrowsinessOverride(1)
         assertTrue(gateway.overrideApplied)
 
         gateway.revertToBaseline()
@@ -21,13 +21,13 @@ class FakeGatewaysTest {
     fun `fake climate gateway throws on apply when configured to`() {
         val gateway = FakeClimateActuatorGateway()
         gateway.throwOnApply = true
-        gateway.applyDrowsinessOverride()
+        gateway.applyDrowsinessOverride(1)
     }
 
     @Test
     fun `fake voice gateway tracks trigger and stop calls`() {
         val gateway = FakeVoiceAlertGateway()
-        gateway.triggerAlert()
+        gateway.triggerAlert(1)
         gateway.stopAlert()
         assertTrue(gateway.alertTriggered)
         assertTrue(gateway.stopCalled)
