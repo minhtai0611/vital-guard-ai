@@ -31,6 +31,6 @@ class ClimateOverrideReceiver(
         // same as the automated path would -- this ADB fallback should not silently
         // ignore the driver's chosen intensity.
         RealClimateActuatorGateway(context, PrefsAlertPreferencesStore(context)).applyDrowsinessOverride(1)
-        voiceAssistant?.executeVoiceIntervention(1)
+        voiceAssistant?.executeVoiceIntervention(1, PrefsAlertPreferencesStore(context).get().voiceVolume)
     }
 }

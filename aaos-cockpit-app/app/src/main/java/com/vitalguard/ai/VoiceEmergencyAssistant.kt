@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -40,7 +41,7 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         }
     }
 
-    fun executeVoiceIntervention(level: Int) {
+    fun executeVoiceIntervention(level: Int, volume: Float) {
         // 1. Cấu hình Audio Attributes với độ ưu tiên cao nhất (ASSISTANT / EMERGENCY)
         val playbackAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -60,7 +61,7 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         val result = audioManager.requestAudioFocus(focusRequest!!)
         if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             Log.w(TAG, "🔇 Audio Focus Obtained! Vehicle Media Muted.")
-            speakAlert(level)
+            speakAlert(level, volume)
         } else {
             Log.e(TAG, "❌ Audio Focus Request Denied.")
         }
@@ -78,10 +79,11 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         else -> "Pull over immediately. Not safe to continue."
     }
 
-    private fun speakAlert(level: Int) {
+    private fun speakAlert(level: Int, volume: Float) {
         val alertText = drowsinessAlertTextFor(level)
-        tts?.speak(alertText, TextToSpeech.QUEUE_FLUSH, null, "EMERGENCY_ALERT")
-        Log.i(TAG, "🗣️ Speaking Alert (level $level): '$alertText'")
+        val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume) }
+        tts?.speak(alertText, TextToSpeech.QUEUE_FLUSH, params, "EMERGENCY_ALERT")
+        Log.i(TAG, "🗣️ Speaking Alert (level $level, volume=$volume): '$alertText'")
     }
 
     private fun distractionReminderTextFor(level: Int): String = when (level) {
@@ -90,7 +92,7 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         else -> "Eyes on the road now!"
     }
 
-    fun executeDistractionReminder(level: Int) {
+    fun executeDistractionReminder(level: Int, volume: Float) {
         // Lighter than executeVoiceIntervention()'s _EXCLUSIVE request -- a brief
         // distraction reminder shouldn't seize/mute all cabin audio the way a
         // sustained drowsiness alert does. Placeholder wording/focus behavior,
@@ -113,8 +115,9 @@ class VoiceEmergencyAssistant(private val context: Context) : TextToSpeech.OnIni
         if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             focusRequest = reminderFocusRequest
             val reminderText = distractionReminderTextFor(level)
-            tts?.speak(reminderText, TextToSpeech.QUEUE_FLUSH, null, "DISTRACTION_REMINDER")
-            Log.i(TAG, "🗣️ Speaking distraction reminder (level $level): '$reminderText'")
+            val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume) }
+            tts?.speak(reminderText, TextToSpeech.QUEUE_FLUSH, params, "DISTRACTION_REMINDER")
+            Log.i(TAG, "🗣️ Speaking distraction reminder (level $level, volume=$volume): '$reminderText'")
         } else {
             Log.e(TAG, "❌ Distraction reminder audio focus request denied.")
         }

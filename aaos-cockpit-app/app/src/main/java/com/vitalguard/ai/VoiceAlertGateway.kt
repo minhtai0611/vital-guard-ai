@@ -42,15 +42,18 @@ class FakeVoiceAlertGateway : VoiceAlertGateway {
 }
 
 /** Real implementation — wraps the existing VoiceEmergencyAssistant unchanged. */
-class RealVoiceAlertGateway(context: Context) : VoiceAlertGateway {
+class RealVoiceAlertGateway(
+    context: Context,
+    private val alertPreferencesStore: AlertPreferencesStore,
+) : VoiceAlertGateway {
     private val assistant = VoiceEmergencyAssistant(context)
 
     override fun triggerAlert(level: Int) {
-        assistant.executeVoiceIntervention(level)
+        assistant.executeVoiceIntervention(level, alertPreferencesStore.get().voiceVolume)
     }
 
     override fun triggerDistractionReminder(level: Int) {
-        assistant.executeDistractionReminder(level)
+        assistant.executeDistractionReminder(level, alertPreferencesStore.get().voiceVolume)
     }
 
     override fun stopAlert() {
