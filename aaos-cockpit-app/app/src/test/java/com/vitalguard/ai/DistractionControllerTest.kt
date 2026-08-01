@@ -1,5 +1,6 @@
 package com.vitalguard.ai
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -70,23 +71,55 @@ class DistractionControllerTest {
     }
 
     @Test
-    fun `gateway throwing on trigger is caught, does not crash, does not retry`() {
+    fun `gateway throwing on trigger is caught, does not crash; a later CRITICAL payload still fires`() {
+        // Regression note: this test used to assert "does not retry" via the
+        // OLD `if (latched) return` early-exit in handleCritical(). The
+        // alert-escalation feature removed that early-exit -- every CRITICAL
+        // payload is now meaningful (Python is the sole timing authority) --
+        // so a later payload on a DIFFERENT correlationId is now EXPECTED to
+        // fire the reminder again, even after an earlier throw.
         voice.throwOnTrigger = true
 
         controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
         // no crash reaching this line is itself part of what's being verified.
-        // latched is set to true BEFORE the try block in handleCritical(), so
-        // it stays true even though the call inside it threw.
 
-        // A second call with the SAME correlationId would be blocked by
-        // onPayload()'s own correlationId dedupe before ever reaching
-        // handleCritical() again -- that would make this test pass without
-        // ever actually exercising the `if (latched) return` retry-prevention
-        // logic it claims to test. Use a DIFFERENT correlationId so this call
-        // genuinely reaches handleCritical() and is blocked by latched, not
-        // by the unrelated dedupe check.
         voice.throwOnTrigger = false
         controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0002"))
+        assertTrue(voice.distractionReminderTriggered)
+    }
+
+    @Test
+    fun `duplicate correlationId does not call the gateway again`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
+        voice.distractionReminderTriggered = false
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001"))
+
         assertFalse(voice.distractionReminderTriggered)
+    }
+
+    @Test
+    fun `consecutive CRITICAL fires the voice reminder every payload with the current level`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 1))
+        assertEquals(1, voice.lastDistractionReminderLevel)
+        voice.distractionReminderTriggered = false
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0002", escalationLevel = 2))
+
+        assertTrue(voice.distractionReminderTriggered)
+        assertEquals(2, voice.lastDistractionReminderLevel)
+    }
+
+    @Test
+    fun `NORMAL after CRITICAL reverts, and a fresh CRITICAL fires again`() {
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0001", escalationLevel = 3))
+        controller.onPayload(payload(TriggerPayload.STATE_NORMAL, "vg-0002"))
+        assertTrue(voice.stopCalled)
+        voice.distractionReminderTriggered = false
+
+        controller.onPayload(payload(TriggerPayload.STATE_CRITICAL, "vg-0003", escalationLevel = 1))
+
+        assertTrue(voice.distractionReminderTriggered)
+        assertEquals(1, voice.lastDistractionReminderLevel)
     }
 }

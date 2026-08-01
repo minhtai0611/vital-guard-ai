@@ -8,6 +8,11 @@ import android.util.Log
  * state entirely separately -- drowsiness and distraction are
  * physiologically independent and must never be merged into one state
  * enum (see design doc Decision 5).
+ *
+ * As of the alert-escalation feature, `handleCritical()` re-acts on every
+ * CRITICAL payload's `distraction.escalationLevel` rather than latching
+ * into a no-op after the first call -- see
+ * docs/superpowers/specs/2026-07-31-alert-escalation-design.md Section 3.
  */
 class DistractionController(private val alertArbiter: AlertArbiter) {
     private val TAG = "VitalGuardDistractionController"
@@ -22,7 +27,7 @@ class DistractionController(private val alertArbiter: AlertArbiter) {
         lastCorrelationId = payload.correlationId
 
         when (payload.distraction.state) {
-            TriggerPayload.STATE_CRITICAL -> handleCritical()
+            TriggerPayload.STATE_CRITICAL -> handleCritical(payload.distraction.escalationLevel)
             else -> handleNonCritical()
         }
     }
@@ -32,13 +37,17 @@ class DistractionController(private val alertArbiter: AlertArbiter) {
         revertToBaseline()
     }
 
-    private fun handleCritical() {
-        if (latched) return
+    // No latch-and-return: every CRITICAL payload is meaningful (original edge,
+    // repeat_due, or level_changed) -- same reasoning as DrowsinessController,
+    // see docs/superpowers/specs/2026-07-31-alert-escalation-design.md Section 3.
+    // There is no climate channel here, so unlike DrowsinessController there is
+    // no per-level dedup needed -- voice simply fires every time.
+    private fun handleCritical(level: Int) {
         latched = true
         try {
-            alertArbiter.requestVoiceAlert(AlertSource.DISTRACTION)
+            alertArbiter.requestVoiceAlert(AlertSource.DISTRACTION, level)
         } catch (t: Throwable) {
-            Log.e(TAG, "Gateway failure requesting distraction reminder: ${t.message}")
+            Log.e(TAG, "Gateway failure requesting distraction reminder at level $level: ${t.message}")
         }
     }
 
