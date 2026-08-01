@@ -30,6 +30,10 @@ class DistractionTriggerEmitter:
         self._armed = True
         self._critical_active = False
 
+    @property
+    def critical_active(self) -> bool:
+        return self._critical_active
+
     def update(self, score: float, now: float) -> Optional[str]:
         if score >= self.enter_threshold:
             if self._above_since is None:

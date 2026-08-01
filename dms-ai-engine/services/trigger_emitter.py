@@ -35,6 +35,10 @@ class TriggerEmitter:
         self._armed = True  # False sau khi đã fire, tới khi score rơi dưới exit_threshold
         self._critical_active = False  # True từ lúc fire CRITICAL tới lúc fire RECOVERED
 
+    @property
+    def critical_active(self) -> bool:
+        return self._critical_active
+
     def update(self, score: float, now: float) -> Optional[str]:
         """Gọi mỗi khi có score mới. Trả 'CRITICAL'/'RECOVERED' đúng 1 lần mỗi
         cạnh tương ứng, hoặc None nếu không có gì cần emit."""
