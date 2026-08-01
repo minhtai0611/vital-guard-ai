@@ -244,6 +244,7 @@ def test_build_trigger_payload_matches_schema():
         reason="sustained_high_score", source="mock-stream", event_counter=1,
         distraction_score=0.75, distraction_state="CRITICAL", yaw_deg=35.0, pitch_deg=5.0,
         hands_visibility="PARTIAL", hands_on_wheel_flag=False, distraction_reason="gaze_off_road",
+        escalation_level=2, distraction_escalation_level=1,
     )
     jsonschema.validate(payload, schema)
     assert payload["state"] == "CRITICAL"
@@ -251,6 +252,8 @@ def test_build_trigger_payload_matches_schema():
     assert payload["features"]["perclos"] == 0.8
     assert payload["distraction"]["state"] == "CRITICAL"
     assert payload["distraction"]["handsOnWheel"] is False
+    assert payload["escalationLevel"] == 2
+    assert payload["distraction"]["escalationLevel"] == 1
 
 
 def test_mock_run_produces_critical_then_recovered_then_serves_them(tmp_path, monkeypatch):
@@ -363,9 +366,13 @@ def test_run_real_video_emits_unknown_after_sustained_lost_face(tmp_path, monkey
 
     main_module.run_real_video("does-not-matter.mp4", tmp_path / "out.csv", host="127.0.0.1", port=0)
 
-    assert any(p["state"] == "UNKNOWN" and p["reason"] == "lost_face" for p in served), (
-        "sustained lost-face (3s of no-face frames) must emit an UNKNOWN/lost_face payload"
+    unknown_payloads = [p for p in served if p["state"] == "UNKNOWN" and p["reason"] == "lost_face"]
+    assert len(unknown_payloads) == 1, (
+        f"sustained lost-face (3s of no-face frames) must emit exactly ONE UNKNOWN/lost_face payload "
+        f"(FacePresenceTracker is edge-only, see test_dms.py:143-148), got {len(unknown_payloads)}"
     )
+    assert unknown_payloads[0]["escalationLevel"] == 1
+    assert unknown_payloads[0]["distraction"]["escalationLevel"] == 1
 
 
 def test_run_real_video_processes_has_face_frames_end_to_end(tmp_path, monkeypatch):
@@ -402,14 +409,17 @@ def test_run_real_video_processes_has_face_frames_end_to_end(tmp_path, monkeypat
     header, data_rows = rows[0], rows[1:]
     assert header.split(",") == ["ts", "has_face", "blink_score", "head_pitch", "score", "state", "signal",
                                   "yaw_deg", "hands_visibility", "hands_on_wheel", "distraction_score",
-                                  "distraction_state", "distraction_signal"]
+                                  "distraction_state", "distraction_signal", "escalation_level",
+                                  "distraction_escalation_level"]
     assert len(data_rows) == len(frames)
 
     for row in data_rows:
         (ts, has_face, blink_score_col, head_pitch, score, state, signal,
          yaw_deg, hands_visibility, on_wheel, distraction_score, distraction_state,
-         distraction_signal) = row.split(",")
+         distraction_signal, escalation_level, distraction_escalation_level) = row.split(",")
         assert has_face == "1"
+        assert escalation_level == "1", "no CRITICAL episode occurs in this test -- level must stay 1"
+        assert distraction_escalation_level == "1"
         # Non-empty and numeric -- confirms blink_score()/extract_pitch_deg()
         # actually ran on the fake's category/matrix data rather than the
         # has_face branch silently short-circuiting.
@@ -534,3 +544,64 @@ def test_blink_score_and_state_agree_for_a_high_blink_score():
     from services.eye_state import blink_score
     blendshapes = {"eyeBlinkLeft": 0.9, "eyeBlinkRight": 0.85}
     assert blink_score(blendshapes) > 0.6  # matches BLINK_CLOSE_THRESHOLD's intent
+
+
+def test_run_real_video_escalates_and_repeats_while_critical_does_not_recover(tmp_path, monkeypatch):
+    """End-to-end proof that a sustained drowsy episode (eyes closed, head
+    drooped, never recovering) produces MORE than one CRITICAL-state payload
+    over time, with escalationLevel increasing -- the exact behavior this
+    plan adds.
+
+    Uses `_fake_landmarker_with_time_varying_pitch` (constant pitch for the
+    first second, then a sustained droop), NOT
+    `_fake_landmarker_with_face_detected`'s constant pitch -- a truly
+    constant pitch throughout would be entirely cancelled out by
+    calibrate_baseline() (baseline_pitch_deg converges to that same
+    constant), capping the score at ~0.80 and never reaching the 0.85
+    CRITICAL threshold. This is the exact ceiling bug documented in
+    CV_REMEDIATION_RESULTS.md -- reproducing it here by accident would make
+    this new test silently never exercise escalation at all."""
+    import cv2
+    import main as main_module
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    fps = 30.0
+    calibration_frames = int(1.0 * fps)  # matches BASELINE_CALIBRATION_SECONDS
+    # 30s of continuous frames -- long enough to observe level 1 -> 2 (+8s)
+    # -> 3 (+16s) and at least one post-level-3 repeat (interval[2]=4.0s),
+    # measured from whenever CRITICAL first fires (a few seconds in, once
+    # sustain_seconds=2.0 elapses past the calibration window).
+    frames = [frame] * int(30.0 * fps)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda path: _FakeVideoCapture(frames, fps=fps))
+    monkeypatch.setattr(
+        "services.face_landmarker_client.build_video_mode_landmarker",
+        lambda model_path: _fake_landmarker_with_time_varying_pitch(
+            calibration_frames=calibration_frames,
+            calibration_pitch_deg=0.0,
+            drooped_pitch_deg=30.0,
+            blink_left=0.9, blink_right=0.9,
+        ),
+    )
+    monkeypatch.setattr(
+        "services.hand_tracker.build_video_mode_hand_landmarker",
+        lambda model_path: _fake_hand_landmarker_with_hands_at(),
+    )
+
+    served = []
+    original_update_latest = main_module.LatestTriggerStore.update_latest
+
+    def spy_update_latest(self, payload):
+        served.append(payload)
+        return original_update_latest(self, payload)
+
+    monkeypatch.setattr(main_module.LatestTriggerStore, "update_latest", spy_update_latest)
+
+    main_module.run_real_video("does-not-matter.mp4", tmp_path / "out.csv", host="127.0.0.1", port=0)
+
+    critical_payloads = [p for p in served if p["state"] == "CRITICAL"]
+    assert len(critical_payloads) > 1, (
+        "a 30s continuous CRITICAL episode must produce more than the original "
+        "edge payload -- escalation repeats/level-changes must also publish"
+    )
+    levels_seen = sorted(set(p["escalationLevel"] for p in critical_payloads))
+    assert levels_seen == [1, 2, 3], f"expected to observe all 3 levels over 30s, got {levels_seen}"
