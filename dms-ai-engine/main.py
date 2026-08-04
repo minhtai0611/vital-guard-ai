@@ -80,13 +80,15 @@ def build_trigger_payload(state: str, score: float, confidence: float,
                            head_euler_angle_x: float, reason: str, source: str,
                            event_counter: int, distraction_score: float, distraction_state: str,
                            yaw_deg: float, pitch_deg: float, hands_visibility: str,
-                           hands_on_wheel_flag: bool, distraction_reason: str) -> dict:
+                           hands_on_wheel_flag: bool, distraction_reason: str,
+                           escalation_level: int, distraction_escalation_level: int) -> dict:
     return {
         "timestampMs": int(time.time() * 1000),
         "source": source,
         "score": round(score, 3),
         "confidence": round(confidence, 3),
         "state": state,
+        "escalationLevel": escalation_level,
         "features": {
             "perclos": round(perclos, 3),
             "eyeOpenProbability": round(eye_open_probability, 3),
@@ -97,6 +99,7 @@ def build_trigger_payload(state: str, score: float, confidence: float,
         "distraction": {
             "score": round(distraction_score, 3),
             "state": distraction_state,
+            "escalationLevel": distraction_escalation_level,
             "yawDeg": round(yaw_deg, 3),
             "pitchDeg": round(pitch_deg, 3),
             "handsVisibility": hands_visibility,
@@ -153,6 +156,7 @@ def run_mock_stream(out_csv: Path, host: str = "0.0.0.0", port: int = 8765) -> N
                         distraction_score=0.0, distraction_state="NORMAL", yaw_deg=0.0, pitch_deg=0.0,
                         hands_visibility="UNKNOWN", hands_on_wheel_flag=False,
                         distraction_reason="mock_stream_no_distraction_signal",
+                        escalation_level=1, distraction_escalation_level=1,
                     )
                     store.update_latest(payload)
 
@@ -181,6 +185,7 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
         is_gaze_off_road, DistractionFrameFeatures, DistractionScoreCalculator,
     )
     from services.distraction_trigger_emitter import DistractionTriggerEmitter
+    from services.escalation_tracker import EscalationTracker
 
     store = LatestTriggerStore()
     server = start_background_server(store, host=host, port=port)
@@ -205,6 +210,8 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
     distraction_calc = DistractionScoreCalculator(window_seconds=2.0, sample_hz=10.0)
     distraction_emitter = DistractionTriggerEmitter(enter_threshold=0.70, exit_threshold=0.40,
                                                       sustain_seconds=1.5, cooldown_seconds=5.0)
+    drowsy_escalation = EscalationTracker(level_up_seconds=[8.0, 16.0], repeat_interval_seconds=[10.0, 5.0, 4.0])
+    distraction_escalation = EscalationTracker(level_up_seconds=[6.0, 12.0], repeat_interval_seconds=[7.0, 5.0, 3.0])
     event_counter = 0
     t = 0.0
     calibration_pitch_samples = []
@@ -223,7 +230,8 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
             writer = csv.writer(f)
             writer.writerow(["ts", "has_face", "blink_score", "head_pitch", "score", "state", "signal",
                               "yaw_deg", "hands_visibility", "hands_on_wheel", "distraction_score",
-                              "distraction_state", "distraction_signal"])
+                              "distraction_state", "distraction_signal", "escalation_level",
+                              "distraction_escalation_level"])
             while cap.isOpened():
                 if _shutdown_requested:
                     break
@@ -243,6 +251,8 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
 
                 face_signal = face_tracker.update(has_face=has_face, now=t)
                 if face_signal == "UNKNOWN":
+                    drowsy_escalation.reset()
+                    distraction_escalation.reset()
                     event_counter += 1
                     store.update_latest(build_trigger_payload(
                         state="UNKNOWN", score=0.0, confidence=0.0,
@@ -251,6 +261,7 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
                         distraction_score=0.0, distraction_state="NORMAL", yaw_deg=0.0, pitch_deg=0.0,
                         hands_visibility=hands_visibility, hands_on_wheel_flag=on_wheel,
                         distraction_reason="lost_face",
+                        escalation_level=1, distraction_escalation_level=1,
                     ))
 
                 yaw_deg = 0.0
@@ -307,7 +318,14 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
                             distraction_score, enter_threshold=0.70, exit_threshold=0.40,
                         )
 
-                    if signal in ("CRITICAL", "RECOVERED") or distraction_signal in ("CRITICAL", "RECOVERED"):
+                    drowsy_level, drowsy_repeat_due, drowsy_level_changed = drowsy_escalation.update(
+                        emitter.critical_active, now=t)
+                    distraction_level, distraction_repeat_due, distraction_level_changed = distraction_escalation.update(
+                        distraction_emitter.critical_active, now=t)
+
+                    if (signal in ("CRITICAL", "RECOVERED") or distraction_signal in ("CRITICAL", "RECOVERED")
+                            or drowsy_repeat_due or distraction_repeat_due
+                            or drowsy_level_changed or distraction_level_changed):
                         event_counter += 1
                         store.update_latest(build_trigger_payload(
                             state=state, score=score, confidence=1.0,
@@ -320,13 +338,16 @@ def run_real_video(video_path: str, out_csv: Path, host: str, port: int,
                             hands_visibility=hands_visibility, hands_on_wheel_flag=on_wheel,
                             distraction_reason=("gaze_off_road_or_hands_off_wheel" if distraction_signal == "CRITICAL"
                                                  else "recovered" if distraction_signal == "RECOVERED" else "unchanged"),
+                            escalation_level=drowsy_level, distraction_escalation_level=distraction_level,
                         ))
                     writer.writerow([f"{t:.2f}", 1, f"{score_blink:.3f}", f"{pitch_deg:.1f}", f"{score:.3f}", state, signal or "",
                                       f"{yaw_deg:.1f}", hands_visibility, int(on_wheel),
-                                      f"{distraction_score:.3f}", distraction_state, distraction_signal or ""])
+                                      f"{distraction_score:.3f}", distraction_state, distraction_signal or "",
+                                      drowsy_level, distraction_level])
                 else:
                     writer.writerow([f"{t:.2f}", 0, "", "", "", "", face_signal or "",
-                                      "", hands_visibility, int(on_wheel), "", "", ""])
+                                      "", hands_visibility, int(on_wheel), "", "", "",
+                                      "", ""])
 
                 t += frame_dt
     finally:

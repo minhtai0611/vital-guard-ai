@@ -83,3 +83,27 @@ def test_recovered_does_not_fire_without_a_prior_critical():
                                          sustain_seconds=1.5, cooldown_seconds=5.0)
     assert emitter.update(0.3, now=0.0) is None
     assert emitter.update(0.2, now=1.0) is None
+
+
+def test_critical_active_property_reflects_internal_state():
+    emitter = DistractionTriggerEmitter(sustain_seconds=1.5, cooldown_seconds=5.0)
+    assert emitter.critical_active is False
+    emitter.update(0.9, now=0.0)
+    emitter.update(0.9, now=1.6)
+    assert emitter.critical_active is True
+    emitter.update(0.3, now=3.0)
+    assert emitter.critical_active is False
+
+
+def test_critical_active_does_not_flap_on_warning_zone_oscillation():
+    emitter = DistractionTriggerEmitter(enter_threshold=0.70, exit_threshold=0.40,
+                                         sustain_seconds=1.5, cooldown_seconds=5.0)
+    emitter.update(0.9, now=0.0)
+    emitter.update(0.9, now=1.6)
+    assert emitter.critical_active is True
+    t = 1.6
+    for i in range(10):
+        score = 0.65 if i % 2 == 0 else 0.45  # oscillates in the WARNING zone, never <=0.40
+        emitter.update(score, now=t)
+        assert emitter.critical_active is True, f"must stay True at t={t}, score={score}"
+        t += 0.3

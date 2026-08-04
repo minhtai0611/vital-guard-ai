@@ -8,6 +8,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- Without this, PackageManager's Android 11+ visibility filtering hides every
+         installed TextToSpeech engine from this app's queryIntentServices() lookup,
+         so TextToSpeech.onInit() silently reports SUCCESS but speak() fails with
+         "not bound to TTS engine" even when a real engine is installed and set as
+         the device default. Confirmed on-device 2026-08-01. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/sym_def_app_icon"

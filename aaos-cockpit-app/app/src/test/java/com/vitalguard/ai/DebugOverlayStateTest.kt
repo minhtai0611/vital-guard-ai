@@ -19,9 +19,13 @@ class DebugOverlayStateTest {
         val state = DebugOverlayState()
         val payload = TriggerPayload(
             timestampMs = 1000L, source = "test", score = 0.9f, confidence = 1.0f,
-            state = TriggerPayload.STATE_CRITICAL,
+            state = TriggerPayload.STATE_CRITICAL, escalationLevel = 1,
             features = TriggerFeatures(perclos = 0.8f, eyeOpenProbability = 0.1f, headEulerAngleX = 28.0f),
             reason = "test", correlationId = "vg-0001",
+            distraction = DistractionInfo(
+                score = 0.0f, state = TriggerPayload.STATE_NORMAL, escalationLevel = 1, yawDeg = 0.0f, pitchDeg = 0.0f,
+                handsVisibility = DistractionInfo.VISIBILITY_UNKNOWN, handsOnWheel = false, reason = "test",
+            ),
         )
 
         state.updateFromPayload(payload)
@@ -39,9 +43,13 @@ class DebugOverlayStateTest {
         val state = DebugOverlayState()
         val payload = TriggerPayload(
             timestampMs = 1000L, source = "test", score = 0.9f, confidence = 1.0f,
-            state = TriggerPayload.STATE_CRITICAL,
+            state = TriggerPayload.STATE_CRITICAL, escalationLevel = 1,
             features = TriggerFeatures(perclos = 0.8f, eyeOpenProbability = 0.1f, headEulerAngleX = 28.0f),
             reason = "test", correlationId = "vg-0001",
+            distraction = DistractionInfo(
+                score = 0.0f, state = TriggerPayload.STATE_NORMAL, escalationLevel = 1, yawDeg = 0.0f, pitchDeg = 0.0f,
+                handsVisibility = DistractionInfo.VISIBILITY_UNKNOWN, handsOnWheel = false, reason = "test",
+            ),
         )
         state.updateFromPayload(payload)
 

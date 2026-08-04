@@ -13,6 +13,7 @@ data class TriggerFeatures(
 data class DistractionInfo(
     val score: Float,
     val state: String,
+    val escalationLevel: Int,
     val yawDeg: Float,
     val pitchDeg: Float,
     val handsVisibility: String,
@@ -33,6 +34,7 @@ data class TriggerPayload(
     val score: Float,
     val confidence: Float,
     val state: String,
+    val escalationLevel: Int,
     val features: TriggerFeatures,
     val reason: String,
     val correlationId: String,

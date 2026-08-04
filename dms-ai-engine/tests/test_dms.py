@@ -90,6 +90,34 @@ def test_hysteresis_prevents_flicker_around_0_85():
     assert fired_any is None
 
 
+def test_critical_active_property_reflects_internal_state():
+    emitter = TriggerEmitter(sustain_seconds=2.0, cooldown_seconds=10.0)
+    assert emitter.critical_active is False
+    emitter.update(0.9, now=0.0)
+    emitter.update(0.9, now=2.1)
+    assert emitter.critical_active is True
+    emitter.update(0.3, now=5.0)
+    assert emitter.critical_active is False
+
+
+def test_critical_active_does_not_flap_on_warning_zone_oscillation():
+    """critical_active must only clear at score<=exit_threshold (0.50) --
+    NOT on any dip into the WARNING zone (0.50-0.85). EscalationTracker
+    (Task 1) depends on this to avoid resetting escalation on a brief
+    improvement."""
+    emitter = TriggerEmitter(enter_threshold=0.85, exit_threshold=0.50,
+                              sustain_seconds=2.0, cooldown_seconds=10.0)
+    emitter.update(0.9, now=0.0)
+    emitter.update(0.9, now=2.1)
+    assert emitter.critical_active is True
+    t = 2.1
+    for i in range(10):
+        score = 0.80 if i % 2 == 0 else 0.60  # oscillates in the WARNING zone, never <=0.50
+        emitter.update(score, now=t)
+        assert emitter.critical_active is True, f"must stay True at t={t}, score={score}"
+        t += 0.3
+
+
 def test_short_dip_below_enter_but_above_exit_resets_sustain_timer():
     """Case gần giống thực tế: score vượt 0.85 được 1.5s rồi tụt xuống 0.7 (chưa chạm exit)
     rồi lại vượt 0.85 — timer sustain phải reset lại từ đầu, không cộng dồn."""
