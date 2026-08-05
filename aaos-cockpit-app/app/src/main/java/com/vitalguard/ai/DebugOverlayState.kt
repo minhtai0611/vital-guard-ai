@@ -38,6 +38,20 @@ class DebugOverlayState {
         )
     }
 
+    /**
+     * Manual test-hook update path for [MainActivity]'s ReplayFileFrameSource spike --
+     * NOT part of the real TriggerPayload/FSM contract. Lets a raw on-device
+     * FaceLandmarker result move the on-screen overlay live during a spike test, since
+     * [updateFromPayload] requires a full [TriggerPayload] this spike doesn't produce.
+     */
+    fun updateFromReplaySpike(eyeOpenProbability: Float, driverState: String) {
+        _flow.value = _flow.value.copy(
+            eyeOpenProbability = eyeOpenProbability,
+            driverState = driverState,
+            receivingTrigger = true,
+        )
+    }
+
     fun markConnectionLost() {
         _flow.value = _flow.value.copy(receivingTrigger = false, driverState = "UNKNOWN")
     }
