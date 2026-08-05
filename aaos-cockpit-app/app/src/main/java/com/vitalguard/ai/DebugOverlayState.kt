@@ -1,5 +1,6 @@
 package com.vitalguard.ai
 
+import android.graphics.Bitmap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -11,6 +12,10 @@ data class OverlaySnapshot(
     val receivingTrigger: Boolean = false,
     val lastPollAt: Long = 0L,
     val lastGatewayAction: String = "NONE",
+    // Debug-only: the most recent frame MediaPipeReplayDetectionSource decoded,
+    // so MainActivity can show what the on-device detection is actually looking
+    // at. Null whenever no on-device replay/camera source is running.
+    val lastFrame: Bitmap? = null,
 )
 
 /**
@@ -38,18 +43,11 @@ class DebugOverlayState {
         )
     }
 
-    /**
-     * Manual test-hook update path for [MainActivity]'s ReplayFileFrameSource spike --
-     * NOT part of the real TriggerPayload/FSM contract. Lets a raw on-device
-     * FaceLandmarker result move the on-screen overlay live during a spike test, since
-     * [updateFromPayload] requires a full [TriggerPayload] this spike doesn't produce.
-     */
-    fun updateFromReplaySpike(eyeOpenProbability: Float, driverState: String) {
-        _flow.value = _flow.value.copy(
-            eyeOpenProbability = eyeOpenProbability,
-            driverState = driverState,
-            receivingTrigger = true,
-        )
+    /** Debug-only: publishes the latest decoded frame from an on-device detection
+     * source (see [com.vitalguard.ai.detection.mediapipe.MediaPipeReplayDetectionSource])
+     * so it can be shown on screen alongside the derived state above it. */
+    fun updateFrame(bitmap: Bitmap) {
+        _flow.value = _flow.value.copy(lastFrame = bitmap)
     }
 
     fun markConnectionLost() {

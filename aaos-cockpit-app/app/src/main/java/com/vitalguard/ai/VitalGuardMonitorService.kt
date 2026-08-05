@@ -9,10 +9,12 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.vitalguard.ai.detection.mediapipe.MediaPipeReplayDetectionSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import java.io.File
 
 /**
  * Foreground service hosting the automated trigger pipeline: TriggerPollClient
@@ -29,15 +31,29 @@ import kotlinx.coroutines.cancel
  * fan-out to both controllers' `onParkedStateChanged`) and constructs a single
  * shared [PrefsAlertPreferencesStore] passed to every gateway/controller that
  * needs it.
+ *
+ * As of the MediaPipe migration spike, this also owns a
+ * [MediaPipeReplayDetectionSource] feeding the exact same `drowsinessController`/
+ * `distractionController` instances as the HTTP path above -- a local-dev-only
+ * addition (see that class's kdoc) that no-ops when no replay file is present on
+ * the device, so it is safe to run alongside the real Container Node path.
+ *
+ * Also dynamically registers [GatewayModeReceiver] here (confirmed on-device
+ * 2026-08-05 that its former manifest declaration never fired -- same
+ * "Background execution not allowed" failure mode as [ClimateOverrideReceiver]'s
+ * TRIGGER_ALERT), so `adb shell am broadcast -a com.vitalguard.ai.SET_GATEWAY_MODE`
+ * only reaches the app while this service is already running.
  */
 class VitalGuardMonitorService : Service() {
 
     private val voiceAssistant by lazy { VoiceEmergencyAssistant(this) }
     private val climateOverrideReceiver by lazy { ClimateOverrideReceiver(voiceAssistant) }
+    private val gatewayModeReceiver by lazy { GatewayModeReceiver() }
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var pollClient: TriggerPollClient
     private lateinit var vehicleContextPollClient: VehicleContextPollClient
     private var realVehicleContextGateway: RealVehicleContextGateway? = null
+    private var replayDetectionSource: MediaPipeReplayDetectionSource? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -45,6 +61,12 @@ class VitalGuardMonitorService : Service() {
 
         val filter = IntentFilter(ClimateOverrideReceiver.ACTION_TRIGGER_ALERT)
         ContextCompat.registerReceiver(this, climateOverrideReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+
+        // Dynamic registration only -- see this class's kdoc and the manifest's comment:
+        // a manifest-declared receiver for this implicit action never fires ("Background
+        // execution not allowed"), confirmed on-device 2026-08-05.
+        val gatewayModeFilter = IntentFilter(GatewayModeReceiver.ACTION_SET_GATEWAY_MODE)
+        ContextCompat.registerReceiver(this, gatewayModeReceiver, gatewayModeFilter, ContextCompat.RECEIVER_EXPORTED)
 
         val alertPreferencesStore: AlertPreferencesStore = PrefsAlertPreferencesStore(this)
 
@@ -77,6 +99,21 @@ class VitalGuardMonitorService : Service() {
         )
         pollClient.start()
 
+        // Local-dev-only on-device MediaPipe path (see MediaPipeReplayDetectionSource's
+        // kdoc) -- no-ops if /data/local/tmp/replay_test.mp4 isn't present on the
+        // device, so this is harmless on a real CarSky demo run where the Container
+        // Node -> HTTP path above is the one actually delivering triggers.
+        replayDetectionSource = MediaPipeReplayDetectionSource(
+            context = this,
+            onPayload = { payload ->
+                DebugOverlayState.instance.updateFromPayload(payload)
+                drowsinessController.onPayload(payload)
+                distractionController.onPayload(payload)
+            },
+            onFrameDecoded = { bitmap -> DebugOverlayState.instance.updateFrame(bitmap) },
+        )
+        replayDetectionSource?.runIfPresent(File("/data/local/tmp", REPLAY_FILE_NAME))
+
         val vehicleContextGateway = RealVehicleContextGateway(this)
         realVehicleContextGateway = vehicleContextGateway
         vehicleContextPollClient = VehicleContextPollClient(
@@ -97,8 +134,10 @@ class VitalGuardMonitorService : Service() {
         pollClient.stop()
         vehicleContextPollClient.stop()
         realVehicleContextGateway?.disconnect()
+        replayDetectionSource?.close()
         serviceScope.cancel()
         unregisterReceiver(climateOverrideReceiver)
+        unregisterReceiver(gatewayModeReceiver)
         voiceAssistant.releaseFocus()
         super.onDestroy()
     }
@@ -129,5 +168,10 @@ class VitalGuardMonitorService : Service() {
         // Placeholder — replace with the room-internal network-pin's real address
         // once confirmed (Day-1 verification task, see the reconciliation design doc).
         private const val CONTAINER_NODE_BASE_URL = "http://192.168.49.2:8765"
+
+        // Must match the filename MediaPipeReplayDetectionSource's caller (this
+        // service) looks for at /data/local/tmp -- see aaos-cockpit-app/docs/
+        // EMULATOR_TESTING_GUIDE.md Section 6.5 for how it gets pushed there.
+        private const val REPLAY_FILE_NAME = "replay_test.mp4"
     }
 }

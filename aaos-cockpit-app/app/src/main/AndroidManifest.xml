@@ -59,15 +59,10 @@
             </intent-filter>
         </receiver>
 
-        <!-- ADB-triggerable at runtime so GATEWAY_MODE can flip REAL<->FAKE in seconds
-             during a live demo without a rebuild: see aaos-cockpit-app/CLAUDE.md. -->
-        <receiver
-            android:name=".GatewayModeReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.vitalguard.ai.SET_GATEWAY_MODE" />
-            </intent-filter>
-        </receiver>
+        <!-- GatewayModeReceiver is registered dynamically inside VitalGuardMonitorService,
+             not declared here: confirmed on-device 2026-08-05 that a manifest-declared
+             receiver for this implicit action never fires ("Background execution not
+             allowed"), same failure mode already documented above for TRIGGER_ALERT. -->
 
     </application>
 
