@@ -7,6 +7,16 @@
     android:padding="24dp"
     android:background="#101418">
 
+    <!-- On-device MediaPipe FaceLandmarker/HandLandmarker camera feed. Visible (rather
+         than headless) so judges can see the driver-facing feed alongside the cockpit
+         status during the demo, per root CLAUDE.md's Demo Script. Only populated in
+         DetectionBackendMode.LIVE_CAMERA; stays empty/hidden in REPLAY_FILE mode. -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/cameraPreview"
+        android:layout_width="320dp"
+        android:layout_height="240dp"
+        android:layout_marginBottom="16dp" />
+
     <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
