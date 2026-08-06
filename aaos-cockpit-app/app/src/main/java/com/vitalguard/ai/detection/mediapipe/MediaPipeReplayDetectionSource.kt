@@ -77,7 +77,7 @@ class MediaPipeReplayDetectionSource(
                         val argbBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) {
                             bitmap
                         } else {
-                            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                            bitmap.copy(Bitmap.Config.ARGB_8888, false).also { bitmap.recycle() }
                         }
                         onFrameDecoded(argbBitmap)
                         client.detectAsync(argbBitmap, tUs / 1_000.0)

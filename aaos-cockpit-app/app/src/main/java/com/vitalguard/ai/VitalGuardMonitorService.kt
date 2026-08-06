@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.vitalguard.ai.detection.mediapipe.MediaPipeReplayDetectionSource
@@ -100,19 +101,37 @@ class VitalGuardMonitorService : Service() {
         pollClient.start()
 
         // Local-dev-only on-device MediaPipe path (see MediaPipeReplayDetectionSource's
-        // kdoc) -- no-ops if /data/local/tmp/replay_test.mp4 isn't present on the
-        // device, so this is harmless on a real CarSky demo run where the Container
-        // Node -> HTTP path above is the one actually delivering triggers.
-        replayDetectionSource = MediaPipeReplayDetectionSource(
-            context = this,
-            onPayload = { payload ->
-                DebugOverlayState.instance.updateFromPayload(payload)
-                drowsinessController.onPayload(payload)
-                distractionController.onPayload(payload)
-            },
-            onFrameDecoded = { bitmap -> DebugOverlayState.instance.updateFrame(bitmap) },
-        )
-        replayDetectionSource?.runIfPresent(File("/data/local/tmp", REPLAY_FILE_NAME))
+        // kdoc). Guarded on the replay file's presence *before* constructing anything --
+        // FaceLandmarkerClient's constructor calls FaceLandmarker.createFromOptions()
+        // eagerly, which loads MediaPipe's native lib immediately. That native-lib load
+        // is exactly what threw UnsatisfiedLinkError (an Error, not an Exception) on this
+        // x86_64 dev machine before the tasks-vision 1.0.0 bump -- it has never
+        // successfully run on arm64 hardware yet, so the same class of failure is
+        // plausible there too. Without this guard + catch (Throwable, not just
+        // RuntimeException -- see this module's CLAUDE.md "Catch Throwable" rule), an
+        // init crash here would propagate out of onCreate() and take down the whole
+        // service, including the real Container Node -> HTTP path below it -- exactly
+        // the failure mode a "local-dev-only, safe to run alongside the real path"
+        // feature must not be able to cause.
+        val replayFile = File("/data/local/tmp", REPLAY_FILE_NAME)
+        if (replayFile.exists()) {
+            replayDetectionSource = try {
+                MediaPipeReplayDetectionSource(
+                    context = this,
+                    onPayload = { payload ->
+                        DebugOverlayState.instance.updateFromPayload(payload)
+                        drowsinessController.onPayload(payload)
+                        distractionController.onPayload(payload)
+                    },
+                    onFrameDecoded = { bitmap -> DebugOverlayState.instance.updateFrame(bitmap) },
+                ).also { it.runIfPresent(replayFile) }
+            } catch (t: Throwable) {
+                Log.e(TAG, "MediaPipe replay detection init failed -- continuing without it", t)
+                null
+            }
+        } else {
+            Log.d(TAG, "No replay file at ${replayFile.absolutePath}, skipping on-device detection")
+        }
 
         val vehicleContextGateway = RealVehicleContextGateway(this)
         realVehicleContextGateway = vehicleContextGateway
@@ -162,6 +181,7 @@ class VitalGuardMonitorService : Service() {
     }
 
     companion object {
+        private const val TAG = "VitalGuardMonitorService"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "vital_guard_monitor"
 

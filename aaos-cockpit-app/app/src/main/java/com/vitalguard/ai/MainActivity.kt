@@ -123,8 +123,11 @@ class MainActivity : AppCompatActivity() {
                     preview,
                     imageAnalysis,
                 )
-            } catch (e: RuntimeException) {
-                Log.e(TAG, "CameraX bind failed", e)
+            } catch (t: Throwable) {
+                // Throwable, not just RuntimeException -- this module's CLAUDE.md
+                // documents CameraX/Car APIs throwing Error subtypes (e.g.
+                // NoSuchMethodError) on real devices despite compiling cleanly.
+                Log.e(TAG, "CameraX bind failed", t)
             }
         }, ContextCompat.getMainExecutor(this))
     }
