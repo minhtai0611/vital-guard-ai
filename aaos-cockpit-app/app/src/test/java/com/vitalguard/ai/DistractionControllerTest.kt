@@ -73,7 +73,7 @@ class DistractionControllerTest {
     }
 
     @Test
-    fun `gateway throwing on trigger is caught, does not crash; a later CRITICAL payload still fires`() {
+    fun `gateway throwing on trigger is caught, does not crash - a later CRITICAL payload still fires`() {
         // Regression note: this test used to assert "does not retry" via the
         // OLD `if (latched) return` early-exit in handleCritical(). The
         // alert-escalation feature removed that early-exit -- every CRITICAL

@@ -7,6 +7,28 @@
     android:padding="24dp"
     android:background="#101418">
 
+    <!-- On-device MediaPipe FaceLandmarker/HandLandmarker camera feed. Kept in the layout
+         so CameraX still has a surface to bind to once its front-camera-selector bug on
+         this AVD is fixed, but hidden (visibility="gone") rather than shown as a dead
+         black box while that bind always fails. See aaos-cockpit-app/MEMORY.md. Only
+         populated in DetectionBackendMode.LIVE_CAMERA; stays hidden in REPLAY_FILE mode. -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/cameraPreview"
+        android:layout_width="320dp"
+        android:layout_height="240dp"
+        android:layout_marginBottom="16dp"
+        android:visibility="gone" />
+
+    <!-- ReplayFileFrameSource spike only (MainActivity.runReplayFileSpikeIfPresent):
+         shows the actual decoded video frame being fed into FaceLandmarker. -->
+    <ImageView
+        android:id="@+id/replayFramePreview"
+        android:layout_width="320dp"
+        android:layout_height="240dp"
+        android:layout_marginBottom="16dp"
+        android:scaleType="fitCenter"
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"

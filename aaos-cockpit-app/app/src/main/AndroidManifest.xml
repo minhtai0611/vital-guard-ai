@@ -2,11 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-feature android:name="android.hardware.type.automotive" android:required="true" />
+    <!-- required="false": REPLAY_FILE detection backend mode must still install and run
+         on a no-camera CarSky emulator image; LIVE_CAMERA mode is unavailable there. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <uses-permission android:name="android.car.permission.CONTROL_CAR_CLIMATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- Without this, PackageManager's Android 11+ visibility filtering hides every
          installed TextToSpeech engine from this app's queryIntentServices() lookup,
@@ -55,15 +59,10 @@
             </intent-filter>
         </receiver>
 
-        <!-- ADB-triggerable at runtime so GATEWAY_MODE can flip REAL<->FAKE in seconds
-             during a live demo without a rebuild: see aaos-cockpit-app/CLAUDE.md. -->
-        <receiver
-            android:name=".GatewayModeReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.vitalguard.ai.SET_GATEWAY_MODE" />
-            </intent-filter>
-        </receiver>
+        <!-- GatewayModeReceiver is registered dynamically inside VitalGuardMonitorService,
+             not declared here: confirmed on-device 2026-08-05 that a manifest-declared
+             receiver for this implicit action never fires ("Background execution not
+             allowed"), same failure mode already documented above for TRIGGER_ALERT. -->
 
     </application>
 

@@ -1,5 +1,6 @@
 package com.vitalguard.ai
 
+import android.graphics.Bitmap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -11,6 +12,10 @@ data class OverlaySnapshot(
     val receivingTrigger: Boolean = false,
     val lastPollAt: Long = 0L,
     val lastGatewayAction: String = "NONE",
+    // Debug-only: the most recent frame MediaPipeReplayDetectionSource decoded,
+    // so MainActivity can show what the on-device detection is actually looking
+    // at. Null whenever no on-device replay/camera source is running.
+    val lastFrame: Bitmap? = null,
 )
 
 /**
@@ -36,6 +41,13 @@ class DebugOverlayState {
             receivingTrigger = true,
             lastPollAt = payload.timestampMs,
         )
+    }
+
+    /** Debug-only: publishes the latest decoded frame from an on-device detection
+     * source (see [com.vitalguard.ai.detection.mediapipe.MediaPipeReplayDetectionSource])
+     * so it can be shown on screen alongside the derived state above it. */
+    fun updateFrame(bitmap: Bitmap) {
+        _flow.value = _flow.value.copy(lastFrame = bitmap)
     }
 
     fun markConnectionLost() {
