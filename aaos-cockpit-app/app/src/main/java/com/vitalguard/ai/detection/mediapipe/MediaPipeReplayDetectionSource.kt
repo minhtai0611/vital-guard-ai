@@ -59,6 +59,14 @@ class MediaPipeReplayDetectionSource(
     private val calibrationPitchSamples = mutableListOf<Double>()
     private var baselineCalibrated = false
 
+    // Counts callbacks actually RECEIVED from MediaPipe's LIVE_STREAM mode,
+    // as opposed to sampledCount in runIfPresent which only counts frames SENT
+    // into detectAsync(). LIVE_STREAM drops inputs when its internal graph is
+    // busy, so fed != received is the signal that frames were silently
+    // dropped. Mutated only inside handleResult, which is @Synchronized, so
+    // no separate lock is needed here.
+    private var receivedCount = 0
+
     fun runIfPresent(videoFile: File) {
         if (!videoFile.exists()) {
             Log.d(TAG, "No replay file at ${videoFile.absolutePath}, skipping")
@@ -93,7 +101,18 @@ class MediaPipeReplayDetectionSource(
                 var sampledCount = 0
                 var tUs = 0L
                 while (tUs < endUs) {
-                    val bitmap = retriever.getFrameAtTime(tUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    // OPTION_CLOSEST (not OPTION_CLOSEST_SYNC): sparse-keyframe
+                    // replay files (e.g. drowsy.mp4, 1 keyframe / 100 frames)
+                    // make OPTION_CLOSEST_SYNC snap to the same nearby sync
+                    // frame on every seek, silently pinning pitch/score near-
+                    // constant for the whole run (empirically confirmed during
+                    // Task 9 probing -- see task-9-report.md's Method section
+                    // and the Task 9 fix-up report). OPTION_CLOSEST decodes
+                    // forward from the nearest keyframe to the exact requested
+                    // timestamp, matching the reference CSV. Slower per-seek on
+                    // long clips, but this is a dev/test-only replay path, not
+                    // the real-time on-device pipeline -- accepted trade-off.
+                    val bitmap = retriever.getFrameAtTime(tUs, MediaMetadataRetriever.OPTION_CLOSEST)
                     if (bitmap != null) {
                         val argbBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) {
                             bitmap
@@ -108,7 +127,7 @@ class MediaPipeReplayDetectionSource(
                     }
                     tUs += sampleIntervalUs
                 }
-                Log.d(TAG, "Replay detection: finished, fed $sampledCount frames")
+                Log.d(TAG, "Replay detection: finished, fed $sampledCount frames, received $receivedCount callbacks")
             } catch (e: Exception) {
                 Log.e(TAG, "Replay detection failed", e)
             } finally {
@@ -140,6 +159,7 @@ class MediaPipeReplayDetectionSource(
     // index) must not silently kill this callback thread.
     @Synchronized
     private fun handleResult(result: FaceLandmarkerResult) {
+        receivedCount++
         try {
             handleResultUnsafe(result)
         } catch (t: Throwable) {
