@@ -103,11 +103,19 @@ class VitalGuardMonitorService : Service() {
                 MediaPipeReplayDetectionSource(
                     context = this,
                     onPayload = { payload ->
-                        DebugOverlayState.instance.updateFromPayload(payload)
                         drowsinessController.onPayload(payload)
                         distractionController.onPayload(payload)
                     },
                     onFrameDecoded = { bitmap -> DebugOverlayState.instance.updateFrame(bitmap) },
+                    // Fires on every processed frame (unlike onPayload's publish
+                    // gate) so the mandatory debug overlay reflects live
+                    // perclos/eyeOpenProbability/headEulerAngleX/state instead of
+                    // freezing on its default snapshot whenever a replay clip
+                    // never crosses a trigger-worthy edge (confirmed on-device
+                    // 2026-08-08: drowsy.mp4 processed 100/100 frames but never
+                    // published once, per the design doc's documented publish
+                    // gate -- see MediaPipeReplayDetectionSource's kdoc).
+                    onTelemetry = { payload -> DebugOverlayState.instance.updateFromPayload(payload) },
                 ).also { it.runIfPresent(replayFile) }
             } catch (t: Throwable) {
                 Log.e(TAG, "MediaPipe replay detection init failed -- continuing without it", t)

@@ -39,6 +39,19 @@ class MediaPipeReplayDetectionSource(
     context: Context,
     private val onPayload: (TriggerPayload) -> Unit,
     private val onFrameDecoded: (Bitmap) -> Unit = {},
+    // Fires on EVERY processed frame, independent of the publish gate below --
+    // root CLAUDE.md's Debug Overlay section is mandatory and requires showing
+    // perclos/eyeOpenProbability/headEulerAngleX/state continuously ("never
+    // tune blind"), which the gated onPayload alone cannot satisfy: on a short
+    // or otherwise non-triggering clip, onPayload may never fire at all (see
+    // design doc S6's documented publish gate), leaving the overlay frozen on
+    // its default UNKNOWN/0 snapshot even though frames are being processed
+    // correctly (confirmed on-device 2026-08-08 against drowsy.mp4 -- 100/100
+    // callbacks received, zero onPayload publishes, since nothing in that
+    // 3.356s clip is ever sustained long enough to cross a publish-worthy
+    // edge). Does not affect onPayload's gating or downstream controller
+    // behavior -- this is purely an additional observability channel.
+    private val onTelemetry: (TriggerPayload) -> Unit = {},
 ) {
     private val client = FaceLandmarkerClient(
         context = context,
@@ -174,14 +187,30 @@ class MediaPipeReplayDetectionSource(
         val faceSignal = faceTracker.update(hasFace, now)
         if (faceSignal == FacePresenceSignal.Unknown) {
             escalation.reset()
-            publish(
+            val payload = buildPayload(
                 state = TriggerPayload.STATE_UNKNOWN,
                 score = 0.0, perclos = 0.0, eyeOpenProbability = 0.0, headEulerAngleX = 0.0,
                 escalationLevel = 1, reason = "lost_face",
             )
+            onTelemetry(payload)
+            onPayload(payload)
             return
         }
-        if (!hasFace) return // still within FacePresenceTracker's grace window -- no payload
+        if (!hasFace) {
+            // Still within FacePresenceTracker's grace window -- no trigger
+            // payload (unchanged behavior), but still surface a live "no face
+            // this frame" telemetry sample so the overlay doesn't freeze on
+            // stale data while the grace window runs out. Does not touch
+            // escalation/trigger state.
+            onTelemetry(
+                buildPayload(
+                    state = TriggerPayload.STATE_UNKNOWN,
+                    score = 0.0, perclos = calc.computeScore(), eyeOpenProbability = 0.0, headEulerAngleX = 0.0,
+                    escalationLevel = 1, reason = "no_face_this_frame",
+                )
+            )
+            return
+        }
 
         val blendshapes = result.faceBlendshapes().get().first().associate { it.categoryName() to it.score() }
         val blink = blinkScore(blendshapes)
@@ -206,17 +235,22 @@ class MediaPipeReplayDetectionSource(
         val state = stateForScore(score)
         val (level, repeatDue, levelChanged) = escalation.update(triggerEmitter.criticalActive, now)
 
+        val payload = buildPayload(
+            state = state, score = score, perclos = calc.computeScore(),
+            eyeOpenProbability = 1.0 - blink, headEulerAngleX = pitchDeg,
+            escalationLevel = level,
+            reason = when (signal) {
+                TriggerSignal.Critical -> "sustained_high_score"
+                TriggerSignal.Recovered -> "recovered"
+                null -> "unchanged"
+            },
+        )
+        // Every processed frame gets a telemetry sample (overlay); onPayload
+        // keeps the original publish gate unchanged (controllers only react
+        // to trigger-worthy edges).
+        onTelemetry(payload)
         if (signal != null || repeatDue || levelChanged) {
-            publish(
-                state = state, score = score, perclos = calc.computeScore(),
-                eyeOpenProbability = 1.0 - blink, headEulerAngleX = pitchDeg,
-                escalationLevel = level,
-                reason = when (signal) {
-                    TriggerSignal.Critical -> "sustained_high_score"
-                    TriggerSignal.Recovered -> "recovered"
-                    null -> "unchanged"
-                },
-            )
+            onPayload(payload)
         }
     }
 
@@ -226,29 +260,28 @@ class MediaPipeReplayDetectionSource(
         else -> TriggerPayload.STATE_NORMAL
     }
 
-    private fun publish(
+    // Pure construction only -- callers decide who gets notified (onTelemetry
+    // always, onPayload only past the publish gate). Was named `publish` and
+    // called `onPayload` directly before the telemetry channel was added.
+    private fun buildPayload(
         state: String, score: Double, perclos: Double, eyeOpenProbability: Double,
         headEulerAngleX: Double, escalationLevel: Int, reason: String,
-    ) {
-        onPayload(
-            TriggerPayload(
-                timestampMs = System.currentTimeMillis(),
-                source = "on-device-kotlin",
-                score = score.toFloat(),
-                confidence = 1f,
-                state = state,
-                escalationLevel = escalationLevel,
-                features = TriggerFeatures(
-                    perclos = perclos.toFloat(),
-                    eyeOpenProbability = eyeOpenProbability.toFloat(),
-                    headEulerAngleX = headEulerAngleX.toFloat(),
-                ),
-                reason = reason,
-                correlationId = "vg-ondevice-${correlationCounter.incrementAndGet()}",
-                distraction = NO_DISTRACTION,
-            )
-        )
-    }
+    ): TriggerPayload = TriggerPayload(
+        timestampMs = System.currentTimeMillis(),
+        source = "on-device-kotlin",
+        score = score.toFloat(),
+        confidence = 1f,
+        state = state,
+        escalationLevel = escalationLevel,
+        features = TriggerFeatures(
+            perclos = perclos.toFloat(),
+            eyeOpenProbability = eyeOpenProbability.toFloat(),
+            headEulerAngleX = headEulerAngleX.toFloat(),
+        ),
+        reason = reason,
+        correlationId = "vg-ondevice-${correlationCounter.incrementAndGet()}",
+        distraction = NO_DISTRACTION,
+    )
 
     fun close() = client.close()
 
