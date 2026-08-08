@@ -45,3 +45,6 @@ MEMORY.md
 .serena/
 dms-ai-engine/public/
 dms-ai-engine/out/
+
+# ---- Local git worktrees (superpowers:using-git-worktrees) ----
+/.worktrees/
