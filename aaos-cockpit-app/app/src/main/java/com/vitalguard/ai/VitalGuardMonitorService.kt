@@ -18,14 +18,15 @@ import kotlinx.coroutines.cancel
 import java.io.File
 
 /**
- * Foreground service hosting the automated trigger pipeline: TriggerPollClient
- * -> DrowsinessController -> Climate/Voice gateways. Also keeps
- * [ClimateOverrideReceiver] registered as the dormant manual on-stage fallback
- * (see design doc Decision 3) — unrelated to the automated path below. Being a
- * foreground service (rather than a receiver tied to [MainActivity]) is what
- * keeps both paths alive regardless of whether the Activity is on screen — a
- * dynamic receiver tied only to the Activity silently stopped firing once the
- * app left the foreground (confirmed on-device 2026-07-24).
+ * Foreground service hosting the on-device trigger pipeline:
+ * [MediaPipeReplayDetectionSource] -> DrowsinessController/DistractionController
+ * -> Climate/Voice gateways. Also keeps [ClimateOverrideReceiver] registered
+ * as the dormant manual on-stage fallback (see design doc Decision 3) --
+ * unrelated to the automated path below. Being a foreground service (rather
+ * than a receiver tied to [MainActivity]) is what keeps this alive regardless
+ * of whether the Activity is on screen -- a dynamic receiver tied only to the
+ * Activity silently stopped firing once the app left the foreground
+ * (confirmed on-device 2026-07-24).
  *
  * As of the alert-preferences-parked-suppression feature, this also owns a
  * [VehicleContextPollClient] (1Hz vehicle-speed poll -> [ParkedStateTracker] ->
@@ -33,11 +34,11 @@ import java.io.File
  * shared [PrefsAlertPreferencesStore] passed to every gateway/controller that
  * needs it.
  *
- * As of the MediaPipe migration spike, this also owns a
- * [MediaPipeReplayDetectionSource] feeding the exact same `drowsinessController`/
- * `distractionController` instances as the HTTP path above -- a local-dev-only
- * addition (see that class's kdoc) that no-ops when no replay file is present on
- * the device, so it is safe to run alongside the real Container Node path.
+ * As of docs/superpowers/specs/2026-08-08-drowsiness-kotlin-port-design.md,
+ * this fully retires the earlier `TriggerPollClient` HTTP-polling path to the
+ * Python Container Node (root CLAUDE.md's original "Trigger Delivery"
+ * decision) -- [MediaPipeReplayDetectionSource] is now the sole trigger
+ * source, no-oping when no replay file is present on the device.
  *
  * Also dynamically registers [GatewayModeReceiver] here (confirmed on-device
  * 2026-08-05 that its former manifest declaration never fired -- same
@@ -51,7 +52,6 @@ class VitalGuardMonitorService : Service() {
     private val climateOverrideReceiver by lazy { ClimateOverrideReceiver(voiceAssistant) }
     private val gatewayModeReceiver by lazy { GatewayModeReceiver() }
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private lateinit var pollClient: TriggerPollClient
     private lateinit var vehicleContextPollClient: VehicleContextPollClient
     private var realVehicleContextGateway: RealVehicleContextGateway? = null
     private var replayDetectionSource: MediaPipeReplayDetectionSource? = null
@@ -84,23 +84,7 @@ class VitalGuardMonitorService : Service() {
         val drowsinessController = DrowsinessController(climateGateway, alertArbiter, alertPreferencesStore)
         val distractionController = DistractionController(alertArbiter, alertPreferencesStore)
 
-        pollClient = TriggerPollClient(
-            fetcher = HttpTriggerFetcher(CONTAINER_NODE_BASE_URL),
-            scope = serviceScope,
-            onPayload = { payload ->
-                DebugOverlayState.instance.updateFromPayload(payload)
-                drowsinessController.onPayload(payload)
-                distractionController.onPayload(payload)
-            },
-            onConnectionLost = {
-                DebugOverlayState.instance.markConnectionLost()
-                drowsinessController.onConnectionLost()
-                distractionController.onConnectionLost()
-            },
-        )
-        pollClient.start()
-
-        // Local-dev-only on-device MediaPipe path (see MediaPipeReplayDetectionSource's
+        // On-device MediaPipe path (see MediaPipeReplayDetectionSource's
         // kdoc). Guarded on the replay file's presence *before* constructing anything --
         // FaceLandmarkerClient's constructor calls FaceLandmarker.createFromOptions()
         // eagerly, which loads MediaPipe's native lib immediately. That native-lib load
@@ -150,7 +134,6 @@ class VitalGuardMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
-        pollClient.stop()
         vehicleContextPollClient.stop()
         realVehicleContextGateway?.disconnect()
         replayDetectionSource?.close()
@@ -184,10 +167,6 @@ class VitalGuardMonitorService : Service() {
         private const val TAG = "VitalGuardMonitorService"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "vital_guard_monitor"
-
-        // Placeholder — replace with the room-internal network-pin's real address
-        // once confirmed (Day-1 verification task, see the reconciliation design doc).
-        private const val CONTAINER_NODE_BASE_URL = "http://192.168.49.2:8765"
 
         // Must match the filename MediaPipeReplayDetectionSource's caller (this
         // service) looks for at /data/local/tmp -- see aaos-cockpit-app/docs/
