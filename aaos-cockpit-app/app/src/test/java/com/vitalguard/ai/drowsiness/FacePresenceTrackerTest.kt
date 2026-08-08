@@ -1,3 +1,6 @@
+/**
+ * Tests for FacePresenceTracker, ported from dms-ai-engine/services/trigger_emitter.py.
+ */
 package com.vitalguard.ai.drowsiness
 
 import org.junit.Assert.assertEquals
