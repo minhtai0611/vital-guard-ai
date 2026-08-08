@@ -8,30 +8,32 @@ import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
 import com.vitalguard.ai.DistractionInfo
 import com.vitalguard.ai.TriggerFeatures
 import com.vitalguard.ai.TriggerPayload
+import com.vitalguard.ai.drowsiness.BlinkStateTracker
+import com.vitalguard.ai.drowsiness.DrowsinessPipelineConfig
+import com.vitalguard.ai.drowsiness.DrowsinessScoreCalculator
+import com.vitalguard.ai.drowsiness.EscalationTracker
+import com.vitalguard.ai.drowsiness.FacePresenceSignal
+import com.vitalguard.ai.drowsiness.FacePresenceTracker
+import com.vitalguard.ai.drowsiness.FrameFeatures
+import com.vitalguard.ai.drowsiness.HeadPose
+import com.vitalguard.ai.drowsiness.TriggerEmitter
+import com.vitalguard.ai.drowsiness.TriggerSignal
+import com.vitalguard.ai.drowsiness.blinkScore
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Local-dev-only replacement for the Container Node -> HTTP TriggerPollClient path
- * (root CLAUDE.md's "Trigger Delivery" section still names the network pin as the
- * decided architecture for the real CarSky demo -- this class does not revert that
- * decision, it only gives this on-device MediaPipe port something to feed into
- * DrowsinessController/DistractionController on a dev machine that has no Container
- * Node reachable). Decodes a device-local MP4 via MediaMetadataRetriever, runs each
- * sampled frame through [FaceLandmarkerClient], and turns sustained high eye-closure
- * into real [TriggerPayload]s.
- *
- * The HIGH/LOW_SUSTAIN_FRAMES hysteresis gate below exists here, in Kotlin, only
- * because there is no Python EscalationTracker upstream of this path the way there
- * is for the real Container Node -> HTTP flow: [com.vitalguard.ai.DrowsinessController]
- * trusts `payload.state` directly by design (see its kdoc) and does not itself
- * debounce -- so *something* upstream of it must, per root CLAUDE.md's mandatory
- * "State Machine Hardening" debounce/hysteresis requirement.
- *
- * Not the final ReplayFileFrameSource/DetectionBackendMode abstraction from the
- * MediaPipe migration plan -- this is a spike proving the wiring end-to-end
- * (MediaPipe -> FSM -> real gateways) with a live-camera path and a real PERCLOS
- * port (DrowsinessScoreCalculator.kt) still to come.
+ * Local-dev-only replacement for the Container Node -> HTTP TriggerPollClient
+ * path that used to run alongside this (root CLAUDE.md's original "Trigger
+ * Delivery" decision -- retired by
+ * docs/superpowers/specs/2026-08-08-drowsiness-kotlin-port-design.md, which
+ * this class now fully implements). Decodes a device-local MP4 via
+ * MediaMetadataRetriever at the video's own native frame rate, runs each
+ * frame through [FaceLandmarkerClient], and turns sustained eye-closure +
+ * head-droop into real [TriggerPayload]s using the same PERCLOS/sustain/
+ * escalation math as dms-ai-engine/main.py::run_real_video() (drowsiness
+ * slice only -- distraction stays hardcoded to NO_DISTRACTION, see the
+ * design doc's non-goals).
  */
 class MediaPipeReplayDetectionSource(
     context: Context,
@@ -45,13 +47,17 @@ class MediaPipeReplayDetectionSource(
     )
     private val correlationCounter = AtomicLong(0)
 
-    private var consecutiveHigh = 0
-    private var consecutiveLow = 0
-    private var currentState = TriggerPayload.STATE_NORMAL
-    private var escalationLevel = 0
-    private var lastStateChangeAtMs = 0L
-    private var lastReportedState: String? = null
-    private var lastCriticalReportAtMs = 0L
+    private val blinkTracker = BlinkStateTracker()
+    private val calc = DrowsinessScoreCalculator()
+    private val triggerEmitter = TriggerEmitter()
+    private val faceTracker = FacePresenceTracker()
+    private val escalation = EscalationTracker(
+        levelUpSeconds = DrowsinessPipelineConfig.LEVEL_UP_SECONDS,
+        repeatIntervalSeconds = DrowsinessPipelineConfig.REPEAT_INTERVAL_SECONDS,
+    )
+
+    private val calibrationPitchSamples = mutableListOf<Double>()
+    private var baselineCalibrated = false
 
     fun runIfPresent(videoFile: File) {
         if (!videoFile.exists()) {
@@ -66,14 +72,29 @@ class MediaPipeReplayDetectionSource(
                     .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L
                 val endUs = durationMs * 1_000L
-                Log.d(TAG, "Replay detection: duration=${durationMs}ms, sampling every 1s")
+
+                // Native fps, matching dms-ai-engine/main.py's own fallback
+                // semantics (fps=30.0 if missing/non-finite/non-positive).
+                // METADATA_KEY_CAPTURE_FRAMERATE is officially "if available"
+                // -- usually absent on normally-recorded clips, so this
+                // commonly falls back to 30.0 in practice. Accepted,
+                // documented trade-off (design doc D2), not a new gap.
+                val reportedFps = retriever
+                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
+                    ?.toDoubleOrNull()
+                val fps = if (reportedFps != null && reportedFps.isFinite() && reportedFps > 0.0) {
+                    reportedFps
+                } else {
+                    DrowsinessPipelineConfig.FALLBACK_FPS
+                }
+                val sampleIntervalUs = (1_000_000.0 / fps).toLong()
+
+                Log.d(TAG, "Replay detection: duration=${durationMs}ms, sampling at ${fps}fps")
                 var sampledCount = 0
                 var tUs = 0L
                 while (tUs < endUs) {
                     val bitmap = retriever.getFrameAtTime(tUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                     if (bitmap != null) {
-                        // MediaPipe's AndroidPacketCreator.createImage() requires ARGB_8888
-                        // strictly -- getFrameAtTime() returns RGB_565 on some devices.
                         val argbBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) {
                             bitmap
                         } else {
@@ -85,7 +106,7 @@ class MediaPipeReplayDetectionSource(
                     } else {
                         Log.w(TAG, "Replay detection: no frame decoded at t=${tUs / 1_000}ms")
                     }
-                    tUs += SAMPLE_INTERVAL_US
+                    tUs += sampleIntervalUs
                 }
                 Log.d(TAG, "Replay detection: finished, fed $sampledCount frames")
             } catch (e: Exception) {
@@ -96,104 +117,123 @@ class MediaPipeReplayDetectionSource(
         }.start()
     }
 
-    // LIVE_STREAM delivers results from MediaPipe's own internal thread pool -- observed
-    // on-device coming from several distinct worker threads concurrently, so the
-    // consecutiveHigh/consecutiveLow/currentState mutation below must be serialized or
-    // concurrent callbacks corrupt the sustain counters via unsynchronized read-modify-write.
+    // Empirically confirmed on-device (Task 9) against
+    // dms-ai-engine/out/evidence_drowsy_fresh_build.csv's known-correct pitch
+    // trajectory: FaceLandmarkerResult.facialTransformationMatrixes()'s flat
+    // float[16] is laid out opposite to the row-major convention
+    // HeadPose.kt's math assumes (matrix[row*4+col]), so it must be
+    // transposed before being passed in. As-is was off by 7-46 degrees with
+    // the wrong sign at all three reference checkpoints; transposed matched
+    // within ~1 degree at all three. See HeadPose.kt's kdoc for context.
+    private fun transpose4x4(m: FloatArray): FloatArray {
+        val t = FloatArray(16)
+        for (row in 0 until 4) for (col in 0 until 4) t[col * 4 + row] = m[row * 4 + col]
+        return t
+    }
+
+    // LIVE_STREAM delivers results from MediaPipe's own internal thread pool
+    // -- observed on-device coming from several distinct worker threads
+    // concurrently, so all state mutation below must be serialized or the
+    // sustain/escalation counters get corrupted by unsynchronized
+    // read-modify-write. Wrapped in catch(Throwable) per this module's
+    // "Catch Throwable" rule -- one bad frame (malformed matrix, unexpected
+    // index) must not silently kill this callback thread.
     @Synchronized
     private fun handleResult(result: FaceLandmarkerResult) {
-        val blendshapes = result.faceBlendshapes().orElse(emptyList()).firstOrNull().orEmpty()
-        val eyeBlinkLeft = blendshapes.find { it.categoryName() == "eyeBlinkLeft" }?.score() ?: 0f
-        val eyeBlinkRight = blendshapes.find { it.categoryName() == "eyeBlinkRight" }?.score() ?: 0f
-        val avgBlink = (eyeBlinkLeft + eyeBlinkRight) / 2f
-        val eyeOpenProbability = 1f - avgBlink
-
-        // Debounce/hysteresis gate: a single noisy frame must not flip state either
-        // way -- needs HIGH_SUSTAIN_FRAMES consecutive high-blink samples to enter
-        // CRITICAL, LOW_SUSTAIN_FRAMES consecutive low-blink samples to recover.
-        when {
-            avgBlink >= HIGH_THRESHOLD -> {
-                consecutiveHigh++
-                consecutiveLow = 0
-            }
-            avgBlink <= LOW_THRESHOLD -> {
-                consecutiveLow++
-                consecutiveHigh = 0
-            }
-            else -> {
-                consecutiveHigh = 0
-                consecutiveLow = 0
-            }
+        try {
+            handleResultUnsafe(result)
+        } catch (t: Throwable) {
+            Log.e(TAG, "handleResult failed for this frame -- continuing", t)
         }
+    }
 
-        Log.d(TAG, "avgBlink=$avgBlink consecutiveHigh=$consecutiveHigh consecutiveLow=$consecutiveLow state=$currentState")
+    private fun handleResultUnsafe(result: FaceLandmarkerResult) {
+        val now = result.timestampMs() / 1_000.0
+        val hasFace = result.faceBlendshapes().map { it.isNotEmpty() }.orElse(false)
 
-        // Cooldown (root CLAUDE.md "State Machine Hardening"): even once sustained, a
-        // state change is only honored if enough wall-clock time passed since the last
-        // one -- otherwise LIVE_STREAM's async, out-of-temporal-order result delivery
-        // (see this function's kdoc) can flip CRITICAL/NORMAL back and forth within the
-        // same second, thrashing the real climate/voice gateways downstream.
-        val now = System.currentTimeMillis()
-        val cooledDown = now - lastStateChangeAtMs >= STATE_CHANGE_COOLDOWN_MS
-        if (cooledDown && currentState != TriggerPayload.STATE_CRITICAL && consecutiveHigh >= HIGH_SUSTAIN_FRAMES) {
-            currentState = TriggerPayload.STATE_CRITICAL
-            escalationLevel = 1
-            lastStateChangeAtMs = now
-        } else if (cooledDown && currentState == TriggerPayload.STATE_CRITICAL && consecutiveLow >= LOW_SUSTAIN_FRAMES) {
-            currentState = TriggerPayload.STATE_NORMAL
-            escalationLevel = 0
-            lastStateChangeAtMs = now
+        val faceSignal = faceTracker.update(hasFace, now)
+        if (faceSignal == FacePresenceSignal.Unknown) {
+            escalation.reset()
+            publish(
+                state = TriggerPayload.STATE_UNKNOWN,
+                score = 0.0, perclos = 0.0, eyeOpenProbability = 0.0, headEulerAngleX = 0.0,
+                escalationLevel = 1, reason = "lost_face",
+            )
+            return
         }
+        if (!hasFace) return // still within FacePresenceTracker's grace window -- no payload
 
-        // Publish gate mirroring the real Container Node path's Python EscalationTracker
-        // (root CLAUDE.md's "Known Deviations" section): DrowsinessController fires its
-        // gateways on every delivered CRITICAL payload by design, trusting that upstream
-        // only publishes on a meaningful edge/repeat/level-change tick -- MediaPipe's
-        // LIVE_STREAM callback has no such throttling built in (it fires per sampled
-        // frame, ~10/s here), so without this gate voice/climate would be invoked on
-        // nearly every frame while CRITICAL persists (confirmed on-device: TTS utterances
-        // overlapping and cutting each other off).
-        val stateChanged = currentState != lastReportedState
-        val repeatDue = currentState == TriggerPayload.STATE_CRITICAL &&
-            now - lastCriticalReportAtMs >= REPEAT_INTERVAL_MS
-        if (!stateChanged && !repeatDue) return
-        lastReportedState = currentState
-        if (currentState == TriggerPayload.STATE_CRITICAL) lastCriticalReportAtMs = now
+        val blendshapes = result.faceBlendshapes().get().first().associate { it.categoryName() to it.score() }
+        val blink = blinkScore(blendshapes)
+        val eyeClosed = blinkTracker.update(blink, now)
 
-        val payload = TriggerPayload(
-            timestampMs = System.currentTimeMillis(),
-            source = "on-device-replay-spike",
-            score = avgBlink,
-            confidence = 1f,
-            state = currentState,
-            escalationLevel = escalationLevel,
-            features = TriggerFeatures(
-                perclos = 0f, // real PERCLOS port (DrowsinessScoreCalculator.kt) not built yet
-                eyeOpenProbability = eyeOpenProbability,
-                headEulerAngleX = 0f, // HeadPose.kt port not built yet
-            ),
-            reason = if (currentState == TriggerPayload.STATE_CRITICAL) {
-                "sustained high eye closure (on-device replay spike)"
+        val matrix = result.facialTransformationMatrixes().orElse(emptyList()).firstOrNull()
+        val pitchDeg = if (matrix != null) HeadPose.extractPitchDeg(transpose4x4(matrix)) else 0.0
+
+        if (!baselineCalibrated) {
+            if (now < DrowsinessPipelineConfig.BASELINE_CALIBRATION_SECONDS) {
+                calibrationPitchSamples.add(pitchDeg)
             } else {
-                ""
-            },
-            correlationId = "replay-${correlationCounter.incrementAndGet()}",
-            distraction = NO_DISTRACTION,
+                if (calibrationPitchSamples.isNotEmpty()) {
+                    calc.calibrateBaseline(calibrationPitchSamples.average())
+                }
+                baselineCalibrated = true
+            }
+        }
+
+        val score = calc.addFrame(FrameFeatures(now, eyeClosed, pitchDeg))
+        val signal = triggerEmitter.update(score, now)
+        val state = stateForScore(score)
+        val (level, repeatDue, levelChanged) = escalation.update(triggerEmitter.criticalActive, now)
+
+        if (signal != null || repeatDue || levelChanged) {
+            publish(
+                state = state, score = score, perclos = calc.computeScore(),
+                eyeOpenProbability = 1.0 - blink, headEulerAngleX = pitchDeg,
+                escalationLevel = level,
+                reason = when (signal) {
+                    TriggerSignal.Critical -> "sustained_high_score"
+                    TriggerSignal.Recovered -> "recovered"
+                    null -> "unchanged"
+                },
+            )
+        }
+    }
+
+    private fun stateForScore(score: Double): String = when {
+        score >= DrowsinessPipelineConfig.ENTER_THRESHOLD -> TriggerPayload.STATE_CRITICAL
+        score > DrowsinessPipelineConfig.EXIT_THRESHOLD -> TriggerPayload.STATE_WARNING
+        else -> TriggerPayload.STATE_NORMAL
+    }
+
+    private fun publish(
+        state: String, score: Double, perclos: Double, eyeOpenProbability: Double,
+        headEulerAngleX: Double, escalationLevel: Int, reason: String,
+    ) {
+        onPayload(
+            TriggerPayload(
+                timestampMs = System.currentTimeMillis(),
+                source = "on-device-kotlin",
+                score = score.toFloat(),
+                confidence = 1f,
+                state = state,
+                escalationLevel = escalationLevel,
+                features = TriggerFeatures(
+                    perclos = perclos.toFloat(),
+                    eyeOpenProbability = eyeOpenProbability.toFloat(),
+                    headEulerAngleX = headEulerAngleX.toFloat(),
+                ),
+                reason = reason,
+                correlationId = "vg-ondevice-${correlationCounter.incrementAndGet()}",
+                distraction = NO_DISTRACTION,
+            )
         )
-        onPayload(payload)
     }
 
     fun close() = client.close()
 
     companion object {
         private const val TAG = "MediaPipeReplayDetection"
-        private const val SAMPLE_INTERVAL_US = 1_000_000L
-        private const val HIGH_THRESHOLD = 0.6f
-        private const val LOW_THRESHOLD = 0.3f
-        private const val HIGH_SUSTAIN_FRAMES = 2
-        private const val LOW_SUSTAIN_FRAMES = 2
-        private const val STATE_CHANGE_COOLDOWN_MS = 3_000L
-        private const val REPEAT_INTERVAL_MS = 5_000L
 
         private val NO_DISTRACTION = DistractionInfo(
             score = 0f,
